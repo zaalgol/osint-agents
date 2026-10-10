@@ -1,0 +1,12 @@
+# Minimal SearXNG config: inherit defaults, enable the JSON API for the search collector.
+use_default_settings: true
+
+server:
+  limiter: false          # local-only instance; our collectors do their own rate limiting
+  image_proxy: false
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json

@@ -1,0 +1,39 @@
+# Local model endpoints and roles. Any OpenAI-compatible server works (Ollama, llama.cpp, vLLM).
+local:
+  backend: ollama                 # ollama (native API, schema-constrained) | openai (llama.cpp, vLLM)
+  base_url: http://127.0.0.1:11434/v1
+  api_key: ollama                 # ignored by Ollama, required by the client
+  roles:
+    agent:                        # extraction, triage, query expansion, translation
+      model: huihui_ai/qwen3-abliterated:14b
+      context: 16384              # per slot; x OLLAMA_NUM_PARALLEL must fit in VRAM
+      temperature: 0.2
+    agent_heavy:                  # harder extraction / resolution judging
+      model: qwen3.6:27b
+      context: 16384
+      temperature: 0.2
+    embedding:
+      model: bge-m3
+      dimensions: 1024            # must match the vector columns in the DB schema
+
+# Claude Code CLI (headless) jobs -> model.
+claude:
+  binary: claude
+  default_model: sonnet
+  use_api_key: false              # never bill the API; jobs run on the Max subscription
+  jobs:
+    plan_investigation: sonnet
+    analyze_investigation: opus
+    threat_assessment: opus
+    link_investigations: sonnet
+    red_team: opus
+    report: opus
+    citation_audit: sonnet
+    ask: sonnet
+  max_turns:                      # tool-use turns per job (bounds quota per run)
+    plan_investigation: 25
+    analyze_investigation: 60
+    report: 50
+    citation_audit: 30
+    link_investigations: 40
+    ask: 20

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# investigation data: raw evidence, exports, reports, DB volumes
+data/*
+!data/.gitkeep
+
+# local secrets / overrides
+.env
+config/*.local.yaml
+config/keys/

@@ -1,0 +1,48 @@
+# Base ontology. Plugins may ship fragments that add types (never remove or redefine).
+# Loosely aligned with STIX 2.1 SDOs and FollowTheMoney schemata for export.
+
+entity_types:
+  person:          {stix: identity, ftm: Person}
+  organization:    {stix: identity, ftm: Organization}
+  armed_group:     {parent: organization, stix: intrusion-set, ftm: Organization}
+  location:        {stix: location, ftm: Address}
+  online_account:  {stix: user-account, ftm: UserAccount, strong_identifier: true}
+  channel:         {parent: online_account, description: "Telegram/YouTube/etc. channel or group"}
+  domain:          {stix: domain-name, strong_identifier: true}
+  url:             {stix: url}
+  email:           {stix: email-addr, strong_identifier: true}
+  phone:           {strong_identifier: true}
+  crypto_wallet:   {strong_identifier: true, ftm: CryptoWallet}
+  vehicle:         {ftm: Vehicle}
+  weapon:          {}
+  document:        {ftm: Document}
+  media_file:      {description: "Image/video/audio identified by hash", strong_identifier: true}
+  ip_address:      {stix: ipv4-addr, strong_identifier: true}
+
+relation_types:
+  member_of:       {from: [person], to: [organization]}
+  leader_of:       {parent: member_of}
+  affiliated_with: {from: [person, organization], to: [person, organization]}
+  operates:        {from: [person, organization], to: [online_account, domain, crypto_wallet]}
+  located_in:      {from: [person, organization, location], to: [location]}
+  funds:           {from: [person, organization, crypto_wallet], to: [person, organization, crypto_wallet]}
+  communicates_with: {from: [person, online_account], to: [person, online_account]}
+  same_as:         {description: "Candidate identity link; resolved by entity resolution"}
+  # enrichment-only (extractable: false): never offered to the extraction LLM
+  registered_by:   {from: [domain], to: [organization], extractable: false, description: "Domain registrar (RDAP)"}
+  resolves_to:     {from: [domain], to: [ip_address], extractable: false, description: "DNS A/AAAA record at capture time"}
+  designated_by:   {from: [person, organization], to: [organization], extractable: false, description: "Official sanctions/terror designation (from the lists themselves)"}
+  mentions:        {}
+
+event_types:
+  attack:          {roles: [perpetrator, target, victim, claimant, location]}
+  threat:          {roles: [issuer, target, channel]}
+  claim_of_responsibility: {roles: [claimant, attack]}
+  arrest:          {roles: [subject, agency, location]}
+  meeting:         {roles: [participant, location]}
+  financial_transfer: {roles: [sender, receiver, instrument]}
+  publication:     {roles: [author, channel]}
+
+# Admiralty / NATO grading
+source_reliability: [A, B, C, D, E, F]
+information_credibility: [1, 2, 3, 4, 5, 6]

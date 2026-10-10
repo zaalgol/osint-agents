@@ -1,0 +1,68 @@
+# Main settings. Override with config/settings.local.yaml (gitignored) or OSINT_* env vars.
+
+data_dir: data                    # raw evidence store, exports, reports
+
+postgres:
+  host: 127.0.0.1
+  port: 5432
+  user: osint
+  password: osint
+  database: osint
+
+neo4j:
+  uri: bolt://127.0.0.1:7687
+  user: neo4j
+  password: osint-neo4j-pw
+
+searxng:
+  url: http://127.0.0.1:8888
+
+concurrency:
+  llm_slots: 2                    # in-flight local LLM calls (match OLLAMA_NUM_PARALLEL)
+  network_tasks: 16               # crawl/download tasks
+
+evidence:
+  hash_algorithms: [sha256, sha512]
+  archive_org: false              # submit captures to Wayback (OPSEC: leaves a public trace)
+  screenshots: true               # full-page PNG + PDF + rendered DOM (Playwright/Chromium)
+  screenshot_timeout_s: 45
+  seal_after_run: true            # Merkle manifest + Ed25519 signature after each run
+  timestamp_methods: [rfc3161, opentimestamps]   # only the manifest hash is sent; [] = off
+  tsa_url: https://freetsa.org/tsr
+
+network:
+  proxy: null                     # null = direct connection for everything (default)
+  # VPN fallback: when a site blocks the direct route (403/429/captcha/connection refused),
+  # the request is retried through this proxy, and the host stays on the VPN for the run.
+  # Use your VPN's SOCKS5/HTTP proxy, or run wireproxy with your WireGuard config, e.g.
+  #   socks5://127.0.0.1:1080      socks5://user:pass@host:1080
+  vpn_proxy: null
+  vpn_fallback: true
+  timeout_s: 30
+  per_host_interval_s: 2.0        # min seconds between requests to the same host
+  max_bytes: 52428800
+
+media:
+  transcribe_missing_captions: true   # Whisper for videos without captions (uv sync --extra media)
+  whisper_model: small
+  whisper_device: auto                # GPU if CUDA libs load, else CPU (~0.5x realtime)
+  max_transcribe_minutes: 20
+
+collection:
+  allow_account_sources: false    # never use sources that need your account/ID
+
+extraction:
+  extractors: [llm]               # add gliner after: uv sync --extra ner
+  # agent = qwen3-abliterated 14B: ~8 s/doc, relations F1 0.50 (gold set, 2026-10-10)
+  # agent_heavy = qwen3.6 27B:   ~49 s/doc, relations F1 0.86; better for final/important runs
+  llm_role: agent
+  chunk_chars: 7000
+  chunk_overlap: 400
+  max_chunks_per_document: 8
+  min_text_chars: 200
+
+plugin_dirs:
+  - plugins_local                 # drop-in plugins, auto-discovered
+
+ontology_files:
+  - config/ontology.yaml
