@@ -51,7 +51,9 @@ def pg_settings(pg_url: str, tmp_path: Path) -> Settings:
     """Settings pointing at the throwaway DB and a temp data dir (for App/Runner tests)."""
     base = Settings()
     pg = base.postgres.model_copy(update={"database": pg_url.rsplit("/", 1)[1]})
-    return base.model_copy(update={"postgres": pg, "data_dir": tmp_path / "data"})
+    # tests never touch the real VPN / proxy configured for live use
+    net = base.network.model_copy(update={"vpn_proxy": None, "proxy": None})
+    return base.model_copy(update={"postgres": pg, "data_dir": tmp_path / "data", "network": net})
 
 
 @pytest.fixture

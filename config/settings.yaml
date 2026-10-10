@@ -39,8 +39,9 @@ network:
   # the request is retried through this proxy, and the host stays on the VPN for the run.
   # Use your VPN's SOCKS5/HTTP proxy, or run wireproxy with your WireGuard config, e.g.
   #   socks5://127.0.0.1:1080      socks5://user:pass@host:1080
-  vpn_proxy: null
+  vpn_proxy: socks5://127.0.0.1:40000   # Cloudflare WARP in proxy mode (free, no account)
   vpn_fallback: true
+  vpn_doh: true                   # VPN route resolves names via DNS-over-HTTPS (through the VPN)
   timeout_s: 30
   per_host_interval_s: 2.0        # min seconds between requests to the same host
   max_bytes: 52428800

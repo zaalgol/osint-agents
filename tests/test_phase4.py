@@ -574,3 +574,89 @@ def test_citation_retraction_keeps_relation_until_last_citation_and_fails_gate(a
         out = retract_citation(s, ids[1], "also wrong", "test")
         assert out.get("relation_retracted") is True
         assert s.get(Relation, rel_id).attributes["retracted"]
+
+
+def test_vpn_route_resolves_with_doh_and_keeps_hostname_for_tls():
+    def vpn(req):
+        if req.url.path == "/dns-query":
+            name = req.url.params["name"]
+            return httpx.Response(200, json={"Answer": [
+                {"type": 1, "data": "203.0.113.9", "TTL": 300}]} if name == "blocked.test" else {})
+        return resp(200, "page")
+
+    async def go():
+        f = Fetcher(_net(vpn_proxy="socks5://vpn.test:1080"), vpn_transport=httpx.MockTransport(vpn))
+        ip = await f._doh("blocked.test")
+        f._vpn_transport = None          # let _build apply DoH (the vpn client already exists)
+        req = await f._build(f._client_get("vpn"), "https://blocked.test/a?b=1", "vpn")
+        direct = await f._build(f._client_get("direct"), "https://blocked.test/a", "direct")
+        await f.aclose()
+        return ip, req, direct
+
+    ip, req, direct = asyncio.run(go())
+    assert ip == "203.0.113.9"
+    assert req.url.host == "203.0.113.9" and req.url.path == "/a" and req.url.query == b"b=1"
+    assert req.headers["Host"] == "blocked.test"
+    assert req.extensions["sni_hostname"] == "blocked.test"     # TLS still verifies the hostname
+    assert direct.url.host == "blocked.test"                     # direct route untouched
+
+
+def test_browser_route_captures_sites_that_block_http_clients(pg_settings):
+    from datetime import UTC, datetime
+
+    from osint.core.context import App
+    from osint.evidence.browser import BrowserCapture, BrowserFetch
+    from osint.evidence.capture import capture_url
+
+    pg_settings.network.per_host_interval_s = 0
+    pg_settings.network.vpn_proxy = None
+    app = App(pg_settings)
+
+    class FakeBrowser:
+        async def fetch(self, url, proxy=None):
+            return BrowserFetch(200, "OK", url, [("user-agent", "x")],
+                                [("content-type", "text/html; charset=utf-8")],
+                                b"<html>real article</html>",
+                                BrowserCapture(b"png", None, b"<html>dom</html>", datetime.now(UTC), url))
+
+        async def capture(self, url, proxy=None):
+            raise AssertionError("not used")
+
+    async def go():
+        async with app.services(http_transport=httpx.MockTransport(lambda r: resp(403, "denied")),
+                                browser=False) as svc:
+            ctx = app.context(None, with_db=False, **{**svc, "browser": FakeBrowser()})
+            return await capture_url(ctx, "https://antibot.test/story", "test")
+
+    item = asyncio.run(go())
+    assert item.meta.extra["route"] == "browser" and item.meta.http_status == 200
+    assert item.data == b"<html>real article</html>" and item.parse
+    assert item.meta.extra["route_attempts"][-1]["error"] == "blocked: HTTP 403"
+    assert {str(getattr(c.kind, "value", c.kind)) for c in item.extra_captures} >= {"warc", "screenshot_png"}
+
+
+def test_unreachable_site_falls_back_to_browser(pg_settings):
+    from datetime import UTC, datetime
+
+    from osint.core.context import App
+    from osint.evidence.browser import BrowserCapture, BrowserFetch
+    from osint.evidence.capture import capture_url
+
+    pg_settings.network.per_host_interval_s = 0
+    app = App(pg_settings)
+
+    class FakeBrowser:
+        async def fetch(self, url, proxy=None):
+            return BrowserFetch(200, "OK", url, [], [("content-type", "text/html")], b"<html>ok</html>",
+                                BrowserCapture(None, None, None, datetime.now(UTC), url))
+
+    def tarpit(req):
+        raise httpx.ReadTimeout("held open", request=req)
+
+    async def go():
+        async with app.services(http_transport=httpx.MockTransport(tarpit), browser=False) as svc:
+            ctx = app.context(None, with_db=False, **{**svc, "browser": FakeBrowser()})
+            return await capture_url(ctx, "https://tarpit.test/a", "test")
+
+    item = asyncio.run(go())
+    assert item.meta.extra["route"] == "browser" and "ReadTimeout" in item.meta.extra["route_attempts"][0]["error"]

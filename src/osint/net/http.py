@@ -113,6 +113,7 @@ class Fetcher:
         self._host_locks: dict[str, asyncio.Lock] = {}
         self._host_last: dict[str, float] = {}
         self.vpn_hosts: set[str] = set()     # hosts that blocked the direct route
+        self._doh_cache: dict[str, tuple[str, float]] = {}
 
     async def __aenter__(self) -> Self:
         return self
@@ -186,6 +187,45 @@ class Fetcher:
             return res
         raise FetchError(f"{url}: no route")  # unreachable
 
+    async def _doh(self, host: str) -> str | None:
+        """Resolve via DNS-over-HTTPS, sent over the VPN route (cached by TTL)."""
+        import ipaddress
+
+        try:
+            ipaddress.ip_address(host)
+            return host                      # already an IP
+        except ValueError:
+            pass
+        hit = self._doh_cache.get(host)
+        if hit and hit[1] > time.monotonic():
+            return hit[0]
+        client = self._client_get("vpn")
+        for rtype, num in (("A", 1), ("AAAA", 28)):
+            r = await client.get(self.settings.doh_url, params={"name": host, "type": rtype},
+                                 headers={"accept": "application/dns-json"})
+            if r.status_code != 200:
+                continue
+            answers = [a for a in r.json().get("Answer", []) if a.get("type") == num]
+            if answers:
+                ip, ttl = answers[-1]["data"], max(60, int(answers[-1].get("TTL", 300)))
+                self._doh_cache[host] = (ip, time.monotonic() + ttl)
+                return ip
+        return None
+
+    async def _build(self, client: httpx.AsyncClient, url: str, route: str) -> httpx.Request:
+        """On the VPN route with DoH: connect to the DoH-resolved IP while keeping the real
+        hostname for the Host header and TLS SNI/certificate verification."""
+        u = httpx.URL(url)
+        if route != "vpn" or not self.settings.vpn_doh or self._vpn_transport is not None:
+            return client.build_request("GET", url)
+        ip = await self._doh(u.host)
+        if ip is None or ip == u.host:
+            return client.build_request("GET", url)
+        host_header = u.host if u.port in (None, 80, 443) else f"{u.host}:{u.port}"
+        target = u.copy_with(host=ip)
+        return client.build_request("GET", target, headers={"Host": host_header},
+                                    extensions={"sni_hostname": u.host})
+
     async def _fetch_route(self, url: str, params: dict | None, max_redirects: int,
                            route: str) -> FetchResult:
         client = self._client_get(route)
@@ -193,18 +233,20 @@ class Fetcher:
         current = str(httpx.URL(url, params=params)) if params else url
         for _ in range(max_redirects + 1):
             await self._polite(current, route)
-            req = client.build_request("GET", current)
+            req = await self._build(client, current, route)
             resp = await client.send(req, stream=True)
             try:
                 resolved_ip = None
-                stream = resp.extensions.get("network_stream")
-                if stream is not None:
+                if req.url.host != httpx.URL(current).host:
+                    resolved_ip = req.url.host        # DoH-resolved address we connected to
+                elif route == "direct" and (stream := resp.extensions.get("network_stream")):
                     addr = stream.get_extra_info("server_addr")
                     if addr:
                         resolved_ip = str(addr[0])
                 if resp.is_redirect and "location" in resp.headers:
                     redirects.append(current)
-                    current = str(resp.url.join(resp.headers["location"]))
+                    # resolve against the hostname URL (the request may have gone to an IP)
+                    current = str(httpx.URL(current).join(resp.headers["location"]))
                     continue
                 headers = [(k, v) for k, v in resp.headers.multi_items()]
                 if resp.is_stream_consumed:

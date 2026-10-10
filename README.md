@@ -220,13 +220,37 @@ them either.
 
 ### Network: direct first, VPN when blocked
 
-Requests go out directly. When a site blocks them (HTTP 401/403/429/451/503, a
-challenge/captcha page, or a refused connection), the request is retried through
-`network.vpn_proxy`, and that site stays on the VPN for the rest of the run. Every
-capture records its route. Blocked sources show up in `osint review` and in the UI. To
-enable the fallback, point `vpn_proxy` at your VPN's SOCKS5/HTTP proxy (many VPN
-providers offer one), or run [wireproxy](https://github.com/pufferffish/wireproxy) with
-your WireGuard config to get a local `socks5://127.0.0.1:1080`.
+Each page is fetched down this ladder, stopping at the first that works:
+
+1. **Direct HTTP**, your normal connection.
+2. **VPN HTTP**, used when the direct route is blocked (HTTP 401/403/429/451/503, a
+   captcha/challenge page) or refused. Names are resolved with DNS-over-HTTPS *through
+   the VPN* (`network.vpn_doh`), which gets past DNS-level blocks while TLS is still
+   verified for the real hostname. A host that blocked direct stays on the VPN for the
+   run.
+3. **Real browser** (Chromium, through the VPN), for sites that refuse any non-browser
+   client. The browser's main-document response becomes the evidence (WARC, screenshot,
+   PDF, DOM).
+
+Every capture records its route and the earlier attempts. Some sites (bot managers like
+Akamai) also reject headless browsers. They stay recorded as blocked, and the system does
+not try to solve captchas or impersonate a person.
+
+**VPN in use: Cloudflare WARP, proxy mode** (free, no account). Only the fallback goes
+through it; your normal traffic doesn't. Setup, already done on this machine:
+
+```powershell
+winget install --id Cloudflare.Warp
+$w = "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+& $w --accept-tos registration new
+& $w --accept-tos mode proxy          # BEFORE connecting: never take over the whole machine
+& $w --accept-tos proxy port 40000
+& $w --accept-tos connect
+```
+
+`network.vpn_proxy: socks5://127.0.0.1:40000`. WARP hides your IP from sites but exits
+in your own country, and Cloudflare knows it's you, so it isn't anonymity. For
+anonymity-critical collection, Tor is the stronger choice.
 
 After every `run`, a post-run step computes embeddings, updates corroboration,
 generates link candidates, syncs the graph and seals new custody entries.

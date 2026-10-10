@@ -28,7 +28,20 @@ async def capture_url(
 ) -> CapturedItem:
     if ctx.http is None:
         raise RuntimeError("no HTTP fetcher in context")
-    res = await ctx.http.fetch(url, params=params)
+    from osint.net.http import FetchError
+
+    try:
+        res = await ctx.http.fetch(url, params=params)
+    except FetchError as e:
+        # every HTTP route failed (e.g. anti-bot tarpits that hold connections open):
+        # a real browser is the last resort for plain page URLs
+        if ctx.browser is None or params:
+            raise
+        item = await _browser_route(ctx, url, [{"route": "http", "error": str(e)[:300]}],
+                                    collector, platform)
+        if item is None:
+            raise
+        return item
     meta = CaptureMeta(
         url=url,
         final_url=res.final_url,
@@ -68,9 +81,53 @@ async def capture_url(
     mime = res.content_type
     if res.charset:
         meta.extra["charset"] = res.charset
+    if res.blocked and ctx.browser is not None:
+        attempts = [*res.attempts, {"route": res.route, "error": f"blocked: {res.blocked}"}]
+        via_browser = await _browser_route(ctx, url, attempts, collector, platform)
+        if via_browser is not None:
+            return via_browser
     # a block page is kept as evidence (it shows the source refused us) but not parsed
     return CapturedItem(data=res.body, meta=meta, mime=mime, extra_captures=extras,
                         parse=res.status < 400 and not res.blocked)
+
+
+async def _browser_route(ctx: PluginContext, url: str, attempts: list[dict], collector: str,
+                         platform: str | None) -> CapturedItem | None:
+    """Last resort for sites that refuse non-browser clients: load the page in Chromium
+    (through the VPN when one is configured). The browser's main-document response is the
+    evidence; it gets its own WARC record."""
+    from osint.net.http import FetchResult, block_reason
+
+    vpn = ctx.settings.network.vpn_proxy if ctx.settings.network.vpn_fallback else None
+    bf = await ctx.browser.fetch(url, proxy=vpn)
+    if bf.status is None or bf.status >= 400 or block_reason(bf.status, bf.body):
+        return None
+    route = "browser+vpn" if vpn else "browser"
+    headers = [(k, v) for k, v in bf.response_headers if k.lower() != "content-encoding"]
+    fr = FetchResult(url=url, final_url=bf.final_url or url, status=bf.status,
+                     reason=bf.reason or "OK", http_version="HTTP/1.1",
+                     request_headers=bf.request_headers, response_headers=headers,
+                     wire_body=bf.body, body=bf.body, fetched_at=bf.capture.captured_at,
+                     route=route)
+    meta = CaptureMeta(
+        url=url, final_url=fr.final_url, http_status=bf.status,
+        user_agent=ctx.settings.network.user_agent, proxy=vpn, collector=collector,
+        platform=platform,
+        extra={"route": route, "fetched_at": fr.fetched_at.isoformat(),
+               "route_attempts": attempts,
+               "note": "HTTP clients were blocked; captured with a real browser"})
+    extras = [ExtraCapture(kind=CaptureKind.WARC, data=build_warc(fr), mime="application/warc")]
+    c = bf.capture
+    if c.screenshot_png:
+        extras.append(ExtraCapture(kind=CaptureKind.SCREENSHOT_PNG, data=c.screenshot_png,
+                                   mime="image/png"))
+    if c.pdf:
+        extras.append(ExtraCapture(kind=CaptureKind.PDF_RENDER, data=c.pdf, mime="application/pdf"))
+    if c.rendered_html:
+        extras.append(ExtraCapture(kind="rendered_html", data=c.rendered_html, mime="text/html"))
+    mime = next((v.split(";")[0].strip() for k, v in headers if k.lower() == "content-type"),
+                "text/html")
+    return CapturedItem(data=bf.body, meta=meta, mime=mime, extra_captures=extras, parse=True)
 
 
 def persist_item(

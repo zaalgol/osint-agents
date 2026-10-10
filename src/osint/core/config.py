@@ -79,6 +79,10 @@ class NetworkSettings(BaseModel):
     proxy: str | None = None          # global proxy for ALL traffic; None = direct
     vpn_proxy: str | None = None      # VPN route, used only when the direct route is blocked
     vpn_fallback: bool = True
+    # On the VPN route, resolve names with DNS-over-HTTPS (sent through the VPN), so
+    # DNS-level blocks and ISP DNS logging don't apply. TLS is still verified per hostname.
+    vpn_doh: bool = True
+    doh_url: str = "https://cloudflare-dns.com/dns-query"
     timeout_s: float = 30
     per_host_interval_s: float = 2.0  # politeness / anti-blocking delay between hits per host
     max_bytes: int = 50 * 1024 * 1024

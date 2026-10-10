@@ -56,6 +56,20 @@ def playwright_proxy(url: str) -> dict:
 
 
 @dataclass
+class BrowserFetch:
+    """Main-document response of a real browser load, plus the visual captures."""
+
+    status: int | None
+    reason: str
+    final_url: str | None
+    request_headers: list[tuple[str, str]]
+    response_headers: list[tuple[str, str]]
+    body: bytes
+    capture: BrowserCapture | None
+    error: str | None = None
+
+
+@dataclass
 class BrowserCapture:
     screenshot_png: bytes | None
     pdf: bytes | None
@@ -121,6 +135,47 @@ class BrowserCapturer:
             except Exception as e:  # noqa: BLE001 - capture failure must not lose the HTTP evidence
                 log.warning("browser capture failed for %s: %s", url, e)
                 return BrowserCapture(None, None, None, datetime.now(UTC), None, error=str(e)[:500])
+
+    async def fetch(self, url: str, proxy: str | None = None) -> BrowserFetch:
+        """Load the page in Chromium (for sites that block non-browser clients) and return
+        the main document's response as received, with screenshot/PDF/rendered DOM."""
+        async with self._sem:
+            try:
+                browser = await self._ensure()
+                opts = {"user_agent": self.user_agent, "viewport": {"width": 1366, "height": 900},
+                        "java_script_enabled": True, "accept_downloads": False}
+                if proxy:
+                    opts["proxy"] = playwright_proxy(proxy)
+                ctx = await browser.new_context(**opts)
+                try:
+                    page = await ctx.new_page()
+                    try:
+                        resp = await page.goto(url, wait_until="networkidle", timeout=self.timeout_ms)
+                    except Exception:  # noqa: BLE001 - busy pages never go idle
+                        resp = await page.goto(url, wait_until="load", timeout=self.timeout_ms)
+                    if resp is None:
+                        return BrowserFetch(None, "", None, [], [], b"", None, "no response")
+                    body = await resp.body()
+                    req_headers = list((await resp.request.all_headers()).items())
+                    resp_headers = list((await resp.all_headers()).items())
+                    at = datetime.now(UTC)
+                    png = await page.screenshot(full_page=True, type="png", timeout=self.timeout_ms)
+                    try:
+                        html = (await page.evaluate(FLATTEN_JS)).encode("utf-8")
+                    except Exception:  # noqa: BLE001
+                        html = (await page.content()).encode("utf-8")
+                    try:
+                        pdf = await page.pdf(print_background=True)
+                    except Exception:  # noqa: BLE001
+                        pdf = None
+                    return BrowserFetch(resp.status, resp.status_text, resp.url, req_headers,
+                                        resp_headers, body,
+                                        BrowserCapture(png, pdf, html, at, page.url))
+                finally:
+                    await ctx.close()
+            except Exception as e:  # noqa: BLE001 - the caller keeps the blocked HTTP evidence
+                log.warning("browser fetch failed for %s: %s", url, e)
+                return BrowserFetch(None, "", None, [], [], b"", None, error=str(e)[:500])
 
     async def aclose(self) -> None:
         if self._browser is not None:
