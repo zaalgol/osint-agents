@@ -49,7 +49,7 @@ async def capture_url(
         resolved_ip=res.resolved_ip,
         user_agent=ctx.settings.network.user_agent,
         proxy=(ctx.settings.network.vpn_proxy if res.route == "vpn"
-               else ctx.settings.network.proxy),
+               else None if res.route == "local" else ctx.settings.network.proxy),
         collector=collector,
         platform=platform,
         extra={"redirects": res.redirects, "http_version": res.http_version,
@@ -64,7 +64,9 @@ async def capture_url(
     if want_shot and is_html and ctx.browser is not None and res.status < 400 \
             and not res.blocked:
         shot = await ctx.browser.capture(
-            res.final_url, proxy=ctx.settings.network.vpn_proxy if res.route == "vpn" else None)
+            res.final_url, proxy=(ctx.settings.network.vpn_proxy if res.route == "vpn"
+                                  else ctx.settings.network.browser_proxy
+                                  or ctx.settings.network.proxy))
         meta.extra["browser_captured_at"] = shot.captured_at.isoformat()
         if shot.error:
             meta.extra["browser_error"] = shot.error
@@ -98,11 +100,15 @@ async def _browser_route(ctx: PluginContext, url: str, attempts: list[dict], col
     evidence; it gets its own WARC record."""
     from osint.net.http import FetchResult, block_reason
 
-    vpn = ctx.settings.network.vpn_proxy if ctx.settings.network.vpn_fallback else None
+    net = ctx.settings.network
+    # VPN when available; otherwise the configured proxy (Tor on the anonymous profile)
+    vpn = (net.vpn_proxy if (net.vpn_fallback and net.vpn_proxy)
+           else net.browser_proxy or net.proxy)
     bf = await ctx.browser.fetch(url, proxy=vpn)
     if bf.status is None or bf.status >= 400 or block_reason(bf.status, bf.body):
         return None
-    route = "browser+vpn" if vpn else "browser"
+    route = ("browser+vpn" if vpn and vpn == net.vpn_proxy
+             else "browser+proxy" if vpn else "browser")
     headers = [(k, v) for k, v in bf.response_headers if k.lower() != "content-encoding"]
     fr = FetchResult(url=url, final_url=bf.final_url or url, status=bf.status,
                      reason=bf.reason or "OK", http_version="HTTP/1.1",

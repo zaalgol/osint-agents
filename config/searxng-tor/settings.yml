@@ -1,0 +1,22 @@
+# SearXNG for anonymous investigations: every engine request goes out through the
+# host's Tor client (osint tor start). socks5h = names resolved by Tor, not locally.
+use_default_settings: true
+
+server:
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 15.0
+  max_request_timeout: 30.0
+  proxies:
+    all://:
+      - socks5h://searxng:x@host.docker.internal:9050
+  using_tor_proxy: true
+  extra_proxy_timeout: 10

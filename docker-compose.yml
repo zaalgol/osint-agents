@@ -47,6 +47,19 @@ services:
     volumes:
       - ./config/searxng:/etc/searxng
 
+  searxng-tor:                     # anonymous investigations; needs `osint tor start` on the host
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8889/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me-to-a-long-random-string}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8889:8080"
+    volumes:
+      - ./config/searxng-tor:/etc/searxng
+
 volumes:
   pgdata:
   neo4jdata:

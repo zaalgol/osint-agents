@@ -345,6 +345,8 @@ def new(
     run_now: Annotated[bool, typer.Option("--run", help="Start running immediately.")] = False,
     plan_first: Annotated[bool, typer.Option(
         "--plan", help="Let Claude plan multilingual collection from the focus.")] = False,
+    anonymous: Annotated[bool, typer.Option(
+        "--anonymous", help="All collection through Tor; never a direct connection.")] = False,
 ) -> None:
     """Create an investigation and queue its initial collection tasks."""
     from osint.core.models import TaskSpec
@@ -365,7 +367,8 @@ def new(
         inv = Investigation(name=name, seed={"focus": focus, "queries": query or [],
                                              "urls": url or [], "feeds": feed or [],
                                              "lang": lang, "time_range": time_range},
-                            config={"max_fetches": max_fetches})
+                            config={"max_fetches": max_fetches,
+                                    "network_profile": "anonymous" if anonymous else "standard"})
         s.add(inv)
         s.flush()
         specs = []
@@ -410,16 +413,28 @@ def _run(ref: str, force_reclaim: bool = False, retry_failed: bool = False,
     with a.session_factory() as s, s.begin():
         inv = _find_investigation(s, ref)
         inv_id, inv_name = inv.id, inv.name
+        from osint.net.profile import apply_profile, profile_of
+
+        profile = profile_of(inv)
         if force_reclaim and (n := queue.reclaim(s, inv_id, None)):
             console.print(f"reclaimed {n} running task(s)")
         if retry_failed and (n := queue.retry_failed(s, inv_id)):
             console.print(f"re-queued {n} failed/blocked task(s)")
 
+    from osint.net.tor import TorUnavailable
+
+    try:
+        a.settings = apply_profile(a.settings, profile, inv_id)
+    except TorUnavailable as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
+
     async def go():
         async with a.services() as services:
             return await Runner(a, inv_id, services, on_event=console.print).run()
 
-    console.print(f"running [bold]{inv_name}[/] (Ctrl+C to pause; resume later)")
+    route = " via Tor (anonymous profile)" if profile == "anonymous" else ""
+    console.print(f"running [bold]{inv_name}[/]{route} (Ctrl+C to pause; resume later)")
     try:
         summary = asyncio.run(go())
     except KeyboardInterrupt:
@@ -1676,6 +1691,66 @@ def decide_link_cmd(
     except ValueError as e:
         console.print(f"[red]{e}[/]")
         raise typer.Exit(1) from None
+
+
+# --------------------------------------------------------------------------- Tor / profiles
+
+tor_app = typer.Typer(no_args_is_help=True, help="Local Tor client for anonymous investigations.")
+app.add_typer(tor_app, name="tor")
+
+
+def _tor_line(st) -> str:
+    if not st.running:
+        return f"[red]not running[/] {st.detail}"
+    tor_ok = "[green]traffic exits via Tor[/]" if st.is_tor else f"[red]NOT via Tor[/] {st.detail}"
+    return f"running, bootstrapped {st.bootstrapped}%, {tor_ok}, exit IP {st.exit_ip}"
+
+
+@tor_app.command("start")
+def tor_start() -> None:
+    """Start Tor (background) and verify with check.torproject.org."""
+    from osint.net import tor
+
+    console.print("starting Tor (first start can take a minute)...")
+    console.print(_tor_line(tor.start(App().settings)))
+
+
+@tor_app.command("stop")
+def tor_stop() -> None:
+    """Stop the background Tor process."""
+    from osint.net import tor
+
+    console.print("stopped" if tor.stop(App().settings) else "Tor was not running")
+
+
+@tor_app.command("status")
+def tor_status() -> None:
+    """Is Tor running, and does traffic really exit through Tor?"""
+    from osint.net import tor
+
+    console.print(_tor_line(tor.status(App().settings)))
+
+
+@app.command()
+def network(
+    investigation: str,
+    profile: Annotated[str | None, typer.Argument(help="standard | anonymous")] = None,
+) -> None:
+    """Show or set an investigation's network profile (anonymous = Tor only)."""
+    from osint.net.profile import PROFILES, profile_of
+    from osint.storage.db import Investigation
+
+    with App().session_factory() as s, s.begin():
+        inv = _find_investigation(s, investigation)
+        if profile is None:
+            console.print(f"{inv.name}: {profile_of(inv)}")
+            return
+        if profile not in PROFILES:
+            console.print(f"[red]use one of {PROFILES}[/]")
+            raise typer.Exit(1)
+        row = s.get(Investigation, inv.id)
+        row.config = {**(row.config or {}), "network_profile": profile}
+        console.print(f"{inv.name}: network profile set to [bold]{profile}[/]")
 
 
 if __name__ == "__main__":

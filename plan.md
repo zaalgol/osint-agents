@@ -87,7 +87,7 @@ Hardware: RTX 5070 Ti, 16 GB GDDR7, Blackwell (sm_120). Use a runtime built agai
 | HTTP / crawl | `httpx`, **Playwright** (JS sites), **crawl4ai** (LLM-friendly crawling), `trafilatura` (article text) | |
 | Search | **SearXNG** (self-hosted metasearch, in Docker), plus APIs where you have keys | |
 | Social / platform | Plugin per platform: Telegram (`telethon`), Reddit (`praw`), RSS, YouTube (`yt-dlp` + Whisper for transcripts), archive.org / Wayback | |
-| Anonymity (optional) | Tor / SOCKS proxy / VPN per collector, set in config | Some sources need it, most don't |
+| Anonymity (optional) | Per investigation: standard (direct, then WARP VPN, then browser) or anonymous (Tor only, fail closed, per-investigation circuits). **Done** | Some sources need it, most don't |
 | Docs / media | `pymupdf`, `exiftool`, Whisper (`faster-whisper`), OCR | |
 | NER baseline | `GLiNER` (multilingual, zero-shot, small) plus an LLM for relations and events | GLiNER is fast and cheap. The LLM handles the harder parts. |
 | Relational DB | **PostgreSQL 16 + pgvector** | System of record |

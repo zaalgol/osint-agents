@@ -48,6 +48,7 @@ class Neo4jSettings(BaseModel):
 
 class SearxngSettings(BaseModel):
     url: str = "http://127.0.0.1:8888"
+    tor_url: str = "http://127.0.0.1:8889"   # instance whose engine queries go through Tor
 
 
 class ConcurrencySettings(BaseModel):
@@ -79,6 +80,9 @@ class NetworkSettings(BaseModel):
     proxy: str | None = None          # global proxy for ALL traffic; None = direct
     vpn_proxy: str | None = None      # VPN route, used only when the direct route is blocked
     vpn_fallback: bool = True
+    # Chromium can't authenticate to SOCKS5 proxies; when set, the browser uses this instead
+    # of `proxy` (the anonymous profile points it at Tor's credential-free browser port)
+    browser_proxy: str | None = None
     # On the VPN route, resolve names with DNS-over-HTTPS (sent through the VPN), so
     # DNS-level blocks and ISP DNS logging don't apply. TLS is still verified per hostname.
     vpn_doh: bool = True
@@ -99,6 +103,14 @@ class MediaSettings(BaseModel):
     whisper_model: str = "small"               # tiny | base | small | medium | large-v3
     whisper_device: str = "auto"               # auto (GPU if CUDA libs load) | cuda | cpu
     max_transcribe_minutes: int = 20
+
+
+class TorSettings(BaseModel):
+    binary: str = "%LOCALAPPDATA%/osint-tor/tor-15.0.24/tor/tor.exe"
+    data_dir: str = "%LOCALAPPDATA%/osint-tor/state"
+    socks_port: int = 9050
+    browser_socks_port: int = 9052    # no auth (Chromium); circuits isolated per destination
+    auto_start: bool = True           # anonymous runs start Tor if it isn't running
 
 
 class CollectionSettings(BaseModel):
@@ -134,6 +146,7 @@ class Settings(BaseSettings):
     evidence: EvidenceSettings = Field(default_factory=EvidenceSettings)
     network: NetworkSettings = Field(default_factory=NetworkSettings)
     collection: CollectionSettings = Field(default_factory=CollectionSettings)
+    tor: TorSettings = Field(default_factory=TorSettings)
     media: MediaSettings = Field(default_factory=MediaSettings)
     analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)

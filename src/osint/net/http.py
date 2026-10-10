@@ -19,6 +19,12 @@ import httpx
 
 from osint.core.config import NetworkSettings
 
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def is_loopback(host: str | None) -> bool:
+    return bool(host) and (host in LOOPBACK_HOSTS or host.startswith("127."))
+
 
 class FetchError(RuntimeError):
     pass
@@ -38,7 +44,7 @@ class FetchResult:
     fetched_at: datetime
     resolved_ip: str | None = None
     redirects: list[str] = field(default_factory=list)
-    route: str = "direct"           # direct | vpn
+    route: str = "direct"           # direct | proxy (configured proxy, e.g. Tor) | vpn | local
     blocked: str | None = None      # why the final response looks like a block (if it does)
     attempts: list[dict] = field(default_factory=list)  # earlier routes tried and why they failed
 
@@ -127,7 +133,9 @@ class Fetcher:
 
     def _client_get(self, route: str = "direct") -> httpx.AsyncClient:
         if route not in self._clients:
-            if route == "vpn":
+            if route == "local":            # our own services on this machine: no proxy
+                transport, proxy = self._transport, None
+            elif route == "vpn":
                 transport, proxy = self._vpn_transport, self.settings.vpn_proxy
             else:
                 transport, proxy = self._transport, self.settings.proxy
@@ -166,6 +174,8 @@ class Fetcher:
         routes = ["vpn"] if use_vpn_first else ["direct"]
         if not use_vpn_first and self.vpn_available and self.settings.vpn_fallback:
             routes.append("vpn")
+        if is_loopback(host):
+            routes = ["local"]
         attempts: list[dict] = []
         for i, route in enumerate(routes):
             last = i == len(routes) - 1
@@ -239,7 +249,8 @@ class Fetcher:
                 resolved_ip = None
                 if req.url.host != httpx.URL(current).host:
                     resolved_ip = req.url.host        # DoH-resolved address we connected to
-                elif route == "direct" and (stream := resp.extensions.get("network_stream")):
+                elif (route == "direct" and not self.settings.proxy
+                      and (stream := resp.extensions.get("network_stream"))):
                     addr = stream.get_extra_info("server_addr")
                     if addr:
                         resolved_ip = str(addr[0])
@@ -247,6 +258,9 @@ class Fetcher:
                     redirects.append(current)
                     # resolve against the hostname URL (the request may have gone to an IP)
                     current = str(httpx.URL(current).join(resp.headers["location"]))
+                    if route == "local" and not is_loopback(httpx.URL(current).host):
+                        # never follow a local service out to the internet without the proxy
+                        raise FetchError(f"{url}: local service redirected off-host to {current}")
                     continue
                 headers = [(k, v) for k, v in resp.headers.multi_items()]
                 if resp.is_stream_consumed:
@@ -280,6 +294,6 @@ class Fetcher:
                 fetched_at=datetime.now(UTC),
                 resolved_ip=resolved_ip,
                 redirects=redirects,
-                route=route,
+                route=("proxy" if route == "direct" and self.settings.proxy else route),
             )
         raise FetchError(f"{url}: too many redirects")

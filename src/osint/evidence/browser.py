@@ -96,9 +96,13 @@ class BrowserCapturer:
 
                 self._pw = await async_playwright().start()
                 # CPU rendering: keep the GPU free for the local LLM
-                launch = {"headless": True, "args": ["--disable-gpu"]}
+                launch = {"headless": True, "args": [
+                    "--disable-gpu",
+                    # WebRTC can reveal real IPs around a proxy: only proxied UDP allowed
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                    "--webrtc-ip-handling-policy=disable_non_proxied_udp"]}
                 if self.proxy:
-                    launch["proxy"] = {"server": self.proxy}
+                    launch["proxy"] = playwright_proxy(self.proxy)
                 self._browser = await self._pw.chromium.launch(**launch)
         return self._browser
 

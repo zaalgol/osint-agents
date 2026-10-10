@@ -95,7 +95,8 @@ class App:
         s = self.settings
         fetcher = Fetcher(s.network, transport=http_transport, vpn_transport=vpn_transport)
         capturer = (
-            BrowserCapturer(s.network.user_agent, s.network.proxy, s.evidence.screenshot_timeout_s,
+            BrowserCapturer(s.network.user_agent, s.network.browser_proxy or s.network.proxy,
+                            s.evidence.screenshot_timeout_s,
                             max_pages=s.concurrency.browser_pages)
             if browser and s.evidence.screenshots else None
         )

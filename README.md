@@ -121,7 +121,6 @@ uv run python -m osint resume redsea
 | `osint report-override <id> --reason` | Release a report that failed the gate (recorded on the report) |
 | `osint ask <inv> "<question>"` | Read-only Q&A over the knowledge base, with citations |
 | `osint findings <inv>` / `osint explain <id>` | List findings / show a finding's proof tree down to the quotes |
-
 | `osint er [<inv>] [--dry-run]` / `osint merges` / `osint er-undo <id>` | Fuzzy entity resolution; list or undo merges |
 | `osint corroborate [<inv>]` | Independent-source counts per fact; contradiction detection |
 | `osint link [<inv>]` / `osint links <inv>` | Cross-investigation link candidates; with `<inv>`, Claude confirms or rejects them with proof |
@@ -134,7 +133,6 @@ uv run python -m osint resume redsea
 | `osint snapshot` | pg_dump + raw evidence + manifests + config, with checksums |
 | `osint evidence seal` | Merkle manifest + Ed25519 signature + RFC 3161/OpenTimestamps (runs after every `run`) |
 | `osint evidence bundle <inv> [--report N]` | Export a zip with the cited evidence, proofs and a standalone `verify.py` |
-
 | `osint collect <inv> <plugin> '<json>'` | Queue any collector, e.g. `telegram_public '{"channels": ["somechannel"]}'` |
 | `osint enrich <inv> [--enrichers rdap,geocode,btc,sanctions]` | Enrich entities with outside sources (proof captured, quotes verified) |
 | `osint export <inv> --format stix,ftm,gexf` | STIX 2.1 / FollowTheMoney / Gephi |
@@ -142,11 +140,18 @@ uv run python -m osint resume redsea
 | `osint retract <rel> --reason` / `osint unretract <rel>` | Retract a wrong relation (kept on record, hidden from analysis/exports) |
 | `osint retract-citation <E> --reason` | Retract one wrong citation; reports citing it fail the gate |
 | `osint cleanup` | Retract LLM-made relations of enrichment-only types |
-
 | `osint eval extraction [--model TAG]` / `osint eval history` | Score a local model on the gold set (P/R/F1, quote accuracy); compare runs |
 | `osint eval health [<inv>]` / `osint eval reports` | Live metrics: rejection and hallucinated-quote rates, corroboration, report citation coverage and precision |
 | `osint decide <review-id> accept\|reject [--note]` | Decide a review item (merge, confirm a listing, acknowledge, dismiss) |
 | `osint decide-link <link-id> confirm\|reject` | Human decision on a cross-investigation link (cites both sides) |
+| `osint new <name> ... --anonymous` / `osint network <inv> [standard\|anonymous]` | Anonymous profile: all of the investigation's traffic through Tor |
+| `osint tor start\|stop\|status` | Local Tor client; `status` confirms traffic exits via Tor |
+| `osint init` | Apply DB migrations, create Neo4j constraints and data directories |
+| `osint doctor` | Check Postgres, pgvector, Neo4j, SearXNG, Ollama models, the Claude CLI and the GPU |
+| `osint plugins` | List discovered plugins |
+| `osint ontology` | Show entity, relation and event types |
+| `osint evidence add <file>` | Ingest a file as evidence (hashes, capture, custody entry) |
+| `osint evidence verify` | Re-hash all stored evidence and verify the custody chain |
 
 ### Quality loop
 
@@ -250,7 +255,42 @@ $w = "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
 
 `network.vpn_proxy: socks5://127.0.0.1:40000`. WARP hides your IP from sites but exits
 in your own country, and Cloudflare knows it's you, so it isn't anonymity. For
-anonymity-critical collection, Tor is the stronger choice.
+anonymity-critical collection, use the anonymous profile below.
+
+### Anonymous profile: Tor only
+
+For hostile sources where your identity matters, mark the investigation anonymous:
+
+```powershell
+uv run python -m osint tor start                  # background Tor; verifies via check.torproject.org
+docker compose up -d searxng-tor                  # SearXNG whose engine queries go through Tor
+uv run python -m osint new "x" -q "..." --anonymous --run
+uv run python -m osint network x anonymous        # or switch an existing investigation
+```
+
+- **Everything goes through Tor:** page fetches, Chromium screenshots and the browser
+  fallback, yt-dlp, enrichers and timestamping. Search-engine queries go out via
+  `searxng-tor` (port 8889). It's a second SearXNG container with
+  `socks5h://host.docker.internal:9050`, so engine names resolve inside Tor too. There's
+  no direct attempt and no WARP fallback. DNS is resolved at the Tor exit.
+- **Fails closed:** if Tor isn't working, the run refuses to start. `tor.auto_start`
+  tries to start it first. Only loopback services (our own SearXNG) skip the proxy, and a
+  loopback response that redirects off-host is refused.
+- **Separate circuits:** each investigation uses its own SOCKS credentials
+  (`IsolateSOCKSAuth`), so exits can't link investigations. Chromium can't send SOCKS
+  credentials, so it uses its own port (9052, `IsolateDestAddr`): one circuit per site.
+  WebRTC is limited to proxied UDP, so pages can't learn your real IP.
+- **Evidence records it:** captures are labelled route `proxy` (or `browser+proxy`) with
+  the Tor SOCKS URL in `capture_meta.proxy`.
+- **Tor itself:** the official Tor Expert Bundle, GPG-verified (Tor Browser Developers key
+  `EF6E 286D DA85 EA2A 4BA7 DE68 4E2C 6E87 9329 8290`), lives in
+  `%LOCALAPPDATA%/osint-tor/`, outside the repo. Upgrade it by downloading a new bundle,
+  verifying its `.asc`, extracting it next to the old one and pointing `tor.binary` at it.
+- **Limits:**
+  - many sites and some search engines (Google, Brave, DuckDuckGo) block or captcha
+    Tor exits, so expect fewer results
+  - Claude and Ollama run locally or on Anthropic's API and never touch the targets
+  - Tor hides *where* you are, not *what* you do: don't log in or reuse identifiers
 
 After every `run`, a post-run step computes embeddings, updates corroboration,
 generates link candidates, syncs the graph and seals new custody entries.
@@ -268,12 +308,6 @@ from their environment). Built-in tools are disabled, so the analyst can only us
 `osint` MCP tools. Results are cached per knowledge state, and usage is recorded in the
 `claude_job` table. When the usage limit is hit, the command says so and local
 collection keeps working.
-| `osint init` | Apply DB migrations, create Neo4j constraints and data directories |
-| `osint doctor` | Check Postgres, pgvector, Neo4j, SearXNG, Ollama models, the Claude CLI and the GPU |
-| `osint plugins` | List discovered plugins |
-| `osint ontology` | Show entity, relation and event types |
-| `osint evidence add <file>` | Ingest a file as evidence (hashes, capture, custody entry) |
-| `osint evidence verify` | Re-hash all stored evidence and verify the custody chain |
 
 ## Tests
 

@@ -16,6 +16,7 @@ neo4j:
 
 searxng:
   url: http://127.0.0.1:8888
+  tor_url: http://127.0.0.1:8889  # anonymous investigations: engine queries go out through Tor
 
 concurrency:
   llm_slots: 2                    # in-flight local LLM calls (match OLLAMA_NUM_PARALLEL)
@@ -51,6 +52,13 @@ media:
   whisper_model: small
   whisper_device: auto                # GPU if CUDA libs load, else CPU (~0.5x realtime)
   max_transcribe_minutes: 20
+
+tor:                              # anonymous network profile (osint new --anonymous)
+  binary: "%LOCALAPPDATA%/osint-tor/tor-15.0.24/tor/tor.exe"   # official Expert Bundle, GPG-verified
+  data_dir: "%LOCALAPPDATA%/osint-tor/state"
+  socks_port: 9050
+  browser_socks_port: 9052        # Chromium's port (no SOCKS auth); isolated per destination site
+  auto_start: true
 
 collection:
   allow_account_sources: false    # never use sources that need your account/ID
