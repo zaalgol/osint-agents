@@ -51,6 +51,13 @@ See [plan.md](plan.md) for the full design.
   - English translations stored next to non-English quotes
   - Whisper transcription for videos without captions (`--extra media`)
   - face redaction for shared bundles (`osint evidence bundle --redact-faces`)
+  - network ladder: direct, then Cloudflare WARP (with DoH), then a real browser; plus an
+    **anonymous profile** that sends everything through Tor (`--anonymous`)
+  - images and scanned PDFs: EXIF + OCR with the local vision model; Telegram post photos
+    are captured
+  - paste sites (`paste` collector); EU and UK sanctions lists
+  - Admiralty codes (source reliability + information credibility) on every citation
+  - contamination handling: hash blocklists and `osint evidence purge`
 
 ## Setup (Windows)
 
