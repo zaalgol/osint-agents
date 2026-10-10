@@ -152,6 +152,8 @@ uv run python -m osint resume redsea
 | `osint ontology` | Show entity, relation and event types |
 | `osint evidence add <file>` | Ingest a file as evidence (hashes, capture, custody entry) |
 | `osint evidence verify` | Re-hash all stored evidence and verify the custody chain |
+| `osint evidence purge <artifact-id> --reason ...` | Hard-delete contaminated content (files, text, quotes), blocklist its hashes; custody-logged |
+| `osint evidence blocklist` | Count the loaded content blocklists |
 
 ### Quality loop
 
@@ -206,6 +208,23 @@ as evidence of a denial, not as a link. Claude sees them separately
 verbatim list entry) only for organizations with a specific, unambiguous name. People,
 single-word names, and names shared by several listed parties (e.g. "Ansar Allah" is also
 a Hizballah alias) become `sanctions_match` review items for an analyst.
+
+### Contamination: blocklists and purge
+
+Extremist sources can carry CSAM or malware.
+
+- **Blocklists:** put hash lists in `data/blocklists/*.txt`. One md5, sha1 or sha256 per
+  line; `#` starts a comment. Content matching a list is refused before it's written,
+  including screenshots, PDFs and WARCs. Only the URL, hash and list name go into the
+  custody log as `blocked`. Lists reload when the files change.
+- **Exact hashes only:** a re-encoded image won't match.
+- **Purge:** `osint evidence purge <id> --reason "..."` permanently deletes an artifact's
+  files. It also blanks its document text, translations, embeddings and quotes, and adds
+  the hashes to `data/blocklists/purged.txt`. The custody log records the hashes and the
+  reason, never content. The record and ids stay. Report citations to it fail the gate,
+  bundles list it as excluded, and integrity checks expect the files to be missing.
+- **Legal duty:** if you encounter CSAM, report it to your national hotline (INHOPE
+  member, e.g. NCMEC/IWF) as the law requires. Don't keep copies.
 
 ### Sources (all public, no account or ID)
 

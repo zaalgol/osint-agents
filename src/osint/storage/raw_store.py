@@ -24,10 +24,73 @@ class IntegrityError(RuntimeError):
     pass
 
 
+class BlockedContent(RuntimeError):
+    """Content whose hash is on a blocklist (known CSAM/malware/purged): never stored."""
+
+    def __init__(self, sha256: str, list_name: str) -> None:
+        super().__init__(f"content {sha256[:16]}... is on blocklist {list_name}; not stored")
+        self.sha256 = sha256
+        self.list_name = list_name
+
+
+HASH_LENGTHS = {32: "md5", 40: "sha1", 64: "sha256"}
+
+
+class Blocklist:
+    """Known-bad content hashes in <data_dir>/blocklists/*.txt.
+
+    One hash per line (md5, sha1 or sha256 hex, detected by length; an optional
+    "algo:" prefix is accepted). Text after '#' is a comment. Files are re-read when
+    they change, so dropping in a list (e.g. one provided by a hotline or a malware
+    feed) takes effect without a restart. `purge` appends to purged.txt.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.dir = Path(directory)
+        self._sig: tuple | None = None
+        self._hashes: dict[str, str] = {}      # hex digest -> list file name
+
+    def _load(self) -> None:
+        files = sorted(self.dir.glob("*.txt")) if self.dir.is_dir() else []
+        sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in files)
+        if sig == self._sig:
+            return
+        hashes: dict[str, str] = {}
+        for p in files:
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                tok = line.split("#", 1)[0].strip().lower()
+                tok = tok.split(":", 1)[-1].strip()
+                if len(tok) in HASH_LENGTHS and all(c in "0123456789abcdef" for c in tok):
+                    hashes.setdefault(tok, p.name)
+        self._hashes, self._sig = hashes, sig
+
+    def __len__(self) -> int:
+        self._load()
+        return len(self._hashes)
+
+    def match(self, *digests: str) -> str | None:
+        self._load()
+        return next((self._hashes[d] for d in digests if d in self._hashes), None)
+
+    def check(self, data: bytes) -> None:
+        if not len(self):
+            return
+        sha256 = hashlib.sha256(data).hexdigest()
+        hit = self.match(sha256, hashlib.md5(data).hexdigest(), hashlib.sha1(data).hexdigest())
+        if hit:
+            raise BlockedContent(sha256, hit)
+
+    def add(self, sha256: str, note: str = "", list_name: str = "purged.txt") -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with open(self.dir / list_name, "a", encoding="utf-8") as f:
+            f.write(f"{sha256}" + (f"  # {note}" if note else "") + "\n")
+
+
 class RawStore:
     def __init__(self, data_dir: Path) -> None:
         self.data_dir = Path(data_dir)
         self.root = self.data_dir / "raw"
+        self.blocklist = Blocklist(self.data_dir / "blocklists")
 
     def path_for(self, sha256: str) -> Path:
         if len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256):
@@ -35,6 +98,7 @@ class RawStore:
         return self.root / sha256[:2] / sha256[2:4] / sha256
 
     def put_bytes(self, data: bytes) -> BlobRef:
+        self.blocklist.check(data)               # in memory: blocked bytes never touch disk
         return self.put_chunks([data])
 
     def put_file(self, src: Path) -> BlobRef:
@@ -47,17 +111,23 @@ class RawStore:
     def put_chunks(self, chunks: Iterable[bytes]) -> BlobRef:
         self.root.mkdir(parents=True, exist_ok=True)
         h256, h512, size = hashlib.sha256(), hashlib.sha512(), 0
+        md5, sha1 = hashlib.md5(), hashlib.sha1()
         fd, tmp = tempfile.mkstemp(dir=self.root, prefix=".incoming-")
         try:
             with os.fdopen(fd, "wb") as out:
                 for chunk in chunks:
                     h256.update(chunk)
                     h512.update(chunk)
+                    md5.update(chunk)
+                    sha1.update(chunk)
                     size += len(chunk)
                     out.write(chunk)
                 out.flush()
                 os.fsync(out.fileno())
             digest = h256.hexdigest()
+            hit = self.blocklist.match(digest, md5.hexdigest(), sha1.hexdigest())
+            if hit:
+                raise BlockedContent(digest, hit)  # the temp file is removed below
             dest = self.path_for(digest)
             if dest.exists():
                 os.unlink(tmp)  # already stored, so this put is a no-op

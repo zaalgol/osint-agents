@@ -40,8 +40,13 @@ def due(app: App) -> bool:
 def run_integrity_check(app: App) -> dict:
     problems: list[str] = []
     files = 0
+    from osint.evidence.purge import purged_hashes
+
     with app.session_factory() as s:
+        gone = purged_hashes(s)              # deleted on purpose (custody "purged")
         for sha256, sha512 in s.execute(select(Artifact.sha256, Artifact.sha512)).yield_per(500):
+            if sha256 in gone:
+                continue
             files += 1
             try:
                 app.raw_store.verify(sha256, sha512)
@@ -49,6 +54,8 @@ def run_integrity_check(app: App) -> dict:
                 problems.append(str(e))
         for sha256, sha512 in s.execute(select(Capture.sha256, Capture.sha512).where(
                 Capture.sha256.is_not(None))).yield_per(500):
+            if sha256 in gone:
+                continue
             files += 1
             try:
                 app.raw_store.verify(sha256, sha512)

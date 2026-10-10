@@ -140,7 +140,12 @@ def persist_item(
     session: Session, store: RawStore, item: CapturedItem, actor: str,
     source_id: int | None = None,
 ) -> tuple[Artifact, bool]:
-    """Store a captured item and its whole bundle in the caller's transaction."""
+    """Store a captured item and its whole bundle in the caller's transaction.
+
+    Every part is checked against the blocklist first, so a blocked item leaves nothing
+    behind (raises BlockedContent before any write)."""
+    for part in (item.data, *(x.data for x in item.extra_captures)):
+        store.blocklist.check(part)
     art, created = ingest_bytes(session, store, item.data, item.meta, actor=actor,
                                 mime=item.mime, source_id=source_id)
     for extra in item.extra_captures:

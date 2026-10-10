@@ -31,6 +31,7 @@ from osint.llm.local import usage_tag
 from osint.orchestrator import queue
 from osint.resolution.resolver import add_ref
 from osint.storage.db import Artifact, Capture, Document, Investigation, RunLog, Task
+from osint.storage.raw_store import BlockedContent
 
 log = logging.getLogger(__name__)
 
@@ -232,7 +233,17 @@ class Runner:
         async for out in collector.collect(params, self.ctx):
             with self.Session() as s, s.begin():
                 if isinstance(out, CapturedItem):
-                    art, created = persist_item(s, self.app.raw_store, out, actor=collector.ident)
+                    try:
+                        art, created = persist_item(s, self.app.raw_store, out,
+                                                    actor=collector.ident)
+                    except BlockedContent as e:
+                        # nothing was written; record only that it was refused
+                        custody.append(s, "blocked", collector.ident, None,
+                                       {"url": out.meta.url, "sha256": e.sha256,
+                                        "blocklist": e.list_name})
+                        stats["refused"] = stats.get("refused", 0) + 1
+                        self.on_event(f"[red]refused blocklisted content[/] from {out.meta.url}")
+                        continue
                     add_ref(s, self.inv_id, "artifact", art.id, collector.ident)
                     stats["artifacts"] += 1
                     stats["new"] += int(created)

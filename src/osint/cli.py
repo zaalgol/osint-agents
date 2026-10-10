@@ -262,10 +262,38 @@ def evidence_bundle(
     console.print(f"[green]✓[/] bundle: {out}\n  verify anywhere: unzip, then `python verify.py`")
 
 
+@evidence_app.command("purge")
+def evidence_purge(
+    artifact_id: int,
+    reason: Annotated[str, typer.Option("--reason", help="Recorded in the custody chain.")],
+    yes: Annotated[bool, typer.Option("--yes", help="Don't ask for confirmation.")] = False,
+) -> None:
+    """Hard-delete an artifact's content (CSAM/malware procedure) and blocklist its hashes."""
+    from osint.evidence.purge import delete_files, purge_artifact
+
+    a = App()
+    if not yes and not typer.confirm(f"Permanently delete the content of artifact {artifact_id}?"):
+        raise typer.Exit(1)
+    with a.session_factory() as s, s.begin():
+        out = purge_artifact(s, a.raw_store, artifact_id, reason)
+    deleted = delete_files(a.raw_store, out["files"])
+    console.print(f"purged artifact {artifact_id}: {deleted} file(s) deleted, "
+                  f"{out['documents']} document(s) and {out['evidence_links']} quote(s) blanked; "
+                  f"{len(out['files'])} hash(es) blocklisted")
+
+
+@evidence_app.command("blocklist")
+def evidence_blocklist() -> None:
+    """Show the loaded content blocklists (<data>/blocklists/*.txt)."""
+    bl = App().raw_store.blocklist
+    console.print(f"{len(bl)} blocked hash(es) from {bl.dir}")
+
+
 @evidence_app.command("verify")
 def evidence_verify() -> None:
     """Re-hash every artifact and capture, and verify the custody hash chain."""
     from osint.evidence.custody import verify_chain
+    from osint.evidence.purge import purged_hashes
     from osint.storage.db import Artifact, Capture
     from osint.storage.raw_store import IntegrityError
 
@@ -273,7 +301,10 @@ def evidence_verify() -> None:
     bad: list[str] = []
     n = 0
     with a.session_factory() as s:
+        gone = purged_hashes(s)
         for sha256, sha512 in s.execute(select(Artifact.sha256, Artifact.sha512)).yield_per(500):
+            if sha256 in gone:
+                continue
             n += 1
             try:
                 a.raw_store.verify(sha256, sha512)
@@ -282,6 +313,8 @@ def evidence_verify() -> None:
         for sha256, sha512 in s.execute(
             select(Capture.sha256, Capture.sha512).where(Capture.sha256.isnot(None))
         ).yield_per(500):
+            if sha256 in gone:
+                continue
             try:
                 a.raw_store.verify(sha256, sha512)
             except IntegrityError as e:

@@ -103,8 +103,15 @@ def build_bundle(app: App, inv_id: int, report_id: int | None = None,
                 for p in paths.values():
                     add(p, f"report/{p.name}")
 
+            from osint.evidence.purge import purged_hashes
+
+            gone = purged_hashes(s)
             for aid in art_ids:
                 art = s.get(Artifact, aid)
+                if art.sha256 in gone:            # content deleted by `evidence purge`
+                    excluded.append({"artifact": aid, "kind": "raw", "sha256": art.sha256,
+                                     "reason": "purged (see custody log)"})
+                    continue
                 raw_arc = f"evidence/A{aid}/raw-{art.sha256[:12]}.{EXT['raw']}"
                 add(data / art.path, raw_arc)
                 caps = []
