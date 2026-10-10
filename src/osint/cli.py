@@ -161,8 +161,38 @@ def doctor() -> None:
         reg = App(settings).registry
         return f"{len(reg.list())} plugins"
 
+    def vpn() -> str:
+        if not settings.network.vpn_proxy:
+            return "off (no network.vpn_proxy; blocked sites stay blocked)"
+        r = httpx.get("https://www.cloudflare.com/cdn-cgi/trace", proxy=settings.network.vpn_proxy,
+                      timeout=20)
+        info = dict(line.split("=", 1) for line in r.text.splitlines() if "=" in line)
+        return f"{settings.network.vpn_proxy}: exit {info.get('loc', '?')}, warp={info.get('warp', '?')}"
+
+    def tor() -> str:
+        from osint.net import tor as torlib
+
+        st = torlib.status(settings)
+        if not st.running:
+            return "not running (only anonymous investigations need it: osint tor start)"
+        if not st.is_tor:
+            raise RuntimeError(f"running but traffic does NOT exit via Tor: {st.detail}")
+        return f"running, exits via Tor ({st.exit_ip})"
+
+    def searx_tor() -> str:
+        try:
+            httpx.get(f"{settings.searxng.tor_url}/healthz", timeout=10).raise_for_status()
+        except httpx.HTTPError:
+            return "down (only anonymous investigations need it: docker compose up -d searxng-tor)"
+        return f"up at {settings.searxng.tor_url}"
+
+    def blocklists() -> str:
+        bl = App(settings).raw_store.blocklist
+        return f"{len(bl)} blocked hash(es) in {bl.dir}"
+
     for name, fn in [("postgres", pg), ("neo4j", neo), ("searxng", searx), ("ollama", ollama),
-                     ("claude cli", claude), ("gpu", gpu), ("plugins", plugins)]:
+                     ("claude cli", claude), ("gpu", gpu), ("plugins", plugins), ("vpn", vpn),
+                     ("tor", tor), ("searxng-tor", searx_tor), ("blocklists", blocklists)]:
         check(name, fn)
 
     t = Table(show_header=True, header_style="bold")
