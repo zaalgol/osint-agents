@@ -1726,6 +1726,78 @@ def decide_link_cmd(
         raise typer.Exit(1) from None
 
 
+@app.command()
+def sources(
+    investigation: Annotated[str | None, typer.Argument(help="Only sources used here.")] = None,
+    backfill: Annotated[bool, typer.Option(
+        "--backfill", help="Assign sources to artifacts captured before source tracking.")] = False,
+    limit: int = 50,
+) -> None:
+    """List sources with their reliability grade (A-F) and artifact counts."""
+    from sqlalchemy import func, text
+
+    from osint.core.models import CaptureMeta
+    from osint.evidence import custody
+    from osint.evidence.sources import RELIABILITY, ensure_source
+    from osint.storage.db import Artifact, InvestigationRef, Source
+
+    a = App()
+    if backfill:
+        n = 0
+        with a.session_factory() as s, s.begin():
+            rows = s.execute(select(Artifact.id, Artifact.capture_meta)
+                             .where(Artifact.source_id.is_(None))).all()
+            s.execute(text("SET LOCAL osint.maintenance = 'on'"))
+            for aid, meta in rows:
+                sid = ensure_source(s, CaptureMeta.model_validate(meta))
+                if sid is not None:
+                    s.execute(Artifact.__table__.update().where(Artifact.id == aid)
+                              .values(source_id=sid))
+                    n += 1
+            s.execute(text("SET LOCAL osint.maintenance = 'off'"))
+            if n:
+                custody.append(s, "sources_backfilled", "cli:sources", None, {"artifacts": n})
+        console.print(f"assigned sources to {n} artifact(s)")
+    with a.session_factory() as s:
+        q = (select(Source, func.count(Artifact.id)).join(Artifact, Artifact.source_id == Source.id)
+             .group_by(Source.id).order_by(func.count(Artifact.id).desc()).limit(limit))
+        if investigation:
+            inv = _find_investigation(s, investigation)
+            q = q.join(InvestigationRef, (InvestigationRef.object_type == "artifact")
+                       & (InvestigationRef.object_id == Artifact.id)
+                       & (InvestigationRef.investigation_id == inv.id))
+        t = Table("id", "grade", "kind", "source", "artifacts", "note")
+        for src, n in s.execute(q):
+            note = src.reliability_note if src.reliability_note != RELIABILITY[src.reliability] else ""
+            t.add_row(str(src.id), src.reliability, src.kind, src.locator, str(n), note or "")
+    console.print(t)
+
+
+@app.command()
+def grade(
+    source: Annotated[str, typer.Argument(help="Source id or locator (e.g. reuters.com, t.me/x)")],
+    reliability: Annotated[str, typer.Argument(help="A-F (Admiralty source reliability)")],
+    note: Annotated[str | None, typer.Option(help="Why (shown with the grade).")] = None,
+) -> None:
+    """Grade a source's reliability: A completely reliable ... E unreliable, F cannot be judged."""
+    from osint.evidence.sources import RELIABILITY
+    from osint.storage.db import Source
+
+    reliability = reliability.upper()
+    if reliability not in RELIABILITY:
+        console.print("[red]use A, B, C, D, E or F[/]")
+        raise typer.Exit(1)
+    with App().session_factory() as s, s.begin():
+        src = (s.get(Source, int(source)) if source.isdigit() else
+               s.scalar(select(Source).where(Source.locator == source.lower())))
+        if src is None:
+            console.print(f"[red]no source {source!r}[/] (see `osint sources`)")
+            raise typer.Exit(1)
+        src.reliability = reliability
+        src.reliability_note = note or RELIABILITY[reliability]
+        console.print(f"{src.kind} {src.locator}: {reliability} ({src.reliability_note})")
+
+
 # --------------------------------------------------------------------------- Tor / profiles
 
 tor_app = typer.Typer(no_args_is_help=True, help="Local Tor client for anonymous investigations.")

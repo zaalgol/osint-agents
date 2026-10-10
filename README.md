@@ -154,6 +154,7 @@ uv run python -m osint resume redsea
 | `osint evidence verify` | Re-hash all stored evidence and verify the custody chain |
 | `osint evidence purge <artifact-id> --reason ...` | Hard-delete contaminated content (files, text, quotes), blocklist its hashes; custody-logged |
 | `osint evidence blocklist` | Count the loaded content blocklists |
+| `osint sources [<inv>] [--backfill]` / `osint grade <source> A-F --note ...` | Sources (website, Telegram/YouTube channel, paste site, list) and their Admiralty reliability |
 
 ### Quality loop
 
@@ -221,6 +222,24 @@ unambiguous name, matched on the entry's primary name or on two of its names. Th
 - a match on one alias only ("Islamic Jihad" is an OFAC alias of Hizballah)
 
 The same party on several lists counts as one party.
+
+### Admiralty grading
+
+Every capture is assigned a source automatically: a website by host (Wayback copies count
+for the original site), a Telegram or YouTube channel, a paste site, or an enrichment
+service. Each citation shows an Admiralty code like **B1**:
+
+- **Letter, source reliability:** you set it with `osint grade reuters.com B --note "..."`.
+  Unknown sources stay **F** ("cannot be judged"). Sanctions-list enrichment starts at
+  A, RDAP and blockchain lookups at B, geocoding at C.
+- **Digit, information credibility:** computed from corroboration:
+  - **1:** two or more independent origins
+  - **4:** contradicted by another source
+  - **6:** otherwise ("cannot be judged")
+
+  Claims keep the credibility recorded on them. Grades 2, 3 and 5 need an analyst.
+
+Claude's `get_evidence` returns both, so the analysis can weigh them.
 
 ### Contamination: blocklists and purge
 

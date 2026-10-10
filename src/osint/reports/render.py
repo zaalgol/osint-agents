@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from osint.reports.verify import MARKER
-from osint.storage.db import Artifact, Capture, EvidenceLink, Finding, Report, Source
+from osint.storage.db import Artifact, Capture, EvidenceLink, Finding, Report
 
 CSS = """
 body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;max-width:860px;margin:2rem auto;
@@ -40,10 +40,9 @@ def _evidence_note(s: Session, eid: int) -> str:
 
     if (cr := s.get(CitationRetraction, ev.id)) is not None:
         return f"RETRACTED CITATION E:{ev.id}: {cr.reason}"
-    grade = "F"
-    if art.source_id:
-        src = s.get(Source, art.source_id)
-        grade = src.reliability if src else "F"
+    from osint.evidence.sources import credibility, grade_of
+
+    grade = grade_of(s, art.source_id) + credibility(s, ev.target_type, ev.target_id)
     archive = s.scalar(select(Capture.external_url).where(
         Capture.artifact_id == art.id, Capture.kind == "archive_org").limit(1))
     parts = [f"“{ev.quote_original or ev.media_locator}”"]
@@ -55,7 +54,7 @@ def _evidence_note(s: Session, eid: int) -> str:
         parts.append(f"posted {art.posted_at:%Y-%m-%d %H:%M}Z")
     parts.append(f"captured {art.fetched_at_utc:%Y-%m-%d %H:%M}Z")
     parts.append(f"SHA-256 `{art.sha256}`")
-    parts.append(f"source reliability {grade}")
+    parts.append(f"Admiralty {grade}")
     if archive:
         parts.append(f"archive: <{archive}>")
     parts.append(f"evidence E:{ev.id}, artifact A:{art.id}")

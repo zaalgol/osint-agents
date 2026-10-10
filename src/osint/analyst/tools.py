@@ -42,7 +42,6 @@ from osint.storage.db import (
     Relation,
     Report,
     ReviewItem,
-    Source,
     SupportStats,
     Task,
 )
@@ -334,9 +333,10 @@ class AnalystTools:
                 if doc is not None and ev.char_start is not None:
                     a, b = max(0, ev.char_start - context_chars), ev.char_end + context_chars
                     ctx = doc.text[a:b]
-                grade = "F"
-                if art.source_id and (src := s.get(Source, art.source_id)):
-                    grade = src.reliability
+                from osint.evidence.sources import credibility, grade_of
+
+                grade = grade_of(s, art.source_id)
+                cred = credibility(s, ev.target_type, ev.target_id)
                 invs = [{"id": i, "name": n} for i, n in s.execute(
                     select(Investigation.id, Investigation.name).join(
                         InvestigationRef, InvestigationRef.investigation_id == Investigation.id)
@@ -351,7 +351,8 @@ class AnalystTools:
                     "url": art.final_url or art.url,
                     "posted_at": art.posted_at.isoformat() if art.posted_at else None,
                     "captured_at": art.fetched_at_utc.isoformat(), "sha256": art.sha256,
-                    "source_reliability": grade, "context": ctx,
+                    "source_reliability": grade, "information_credibility": cred,
+                    "admiralty": grade + cred, "context": ctx,
                 })
             return out
 

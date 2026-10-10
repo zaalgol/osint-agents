@@ -144,8 +144,12 @@ def persist_item(
 
     Every part is checked against the blocklist first, so a blocked item leaves nothing
     behind (raises BlockedContent before any write)."""
+    from osint.evidence.sources import ensure_source
+
     for part in (item.data, *(x.data for x in item.extra_captures)):
         store.blocklist.check(part)
+    if source_id is None:
+        source_id = ensure_source(session, item.meta)
     art, created = ingest_bytes(session, store, item.data, item.meta, actor=actor,
                                 mime=item.mime, source_id=source_id)
     for extra in item.extra_captures:
