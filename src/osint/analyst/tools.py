@@ -353,6 +353,9 @@ class AnalystTools:
                     "captured_at": art.fetched_at_utc.isoformat(), "sha256": art.sha256,
                     "source_reliability": grade, "information_credibility": cred,
                     "admiralty": grade + cred, "context": ctx,
+                    # OCR / speech-to-text: the quote is what a model read or heard
+                    "machine_read": bool(doc and (doc.extractor.startswith("ocr:")
+                                                  or "machine transcription" in doc.text[:600])),
                 })
             return out
 
