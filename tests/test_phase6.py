@@ -419,3 +419,36 @@ def test_extraction_resumes_from_the_next_chunk(app6):
     assert n_chunks >= 3
     assert len(seen_chunks) == n_chunks           # every chunk extracted exactly once
     assert len(set(seen_chunks)) == n_chunks
+
+
+def test_truncated_output_is_retried_with_a_shorter_request():
+    import json
+    from pathlib import Path
+
+    import httpx
+
+    from osint.core.config import LocalModels, LocalRole
+    from osint.core.ontology import Ontology
+    from osint.llm.local import LocalLLM
+    from osint.plugins.extractors.llm import schema_for
+
+    onto = Ontology.load([Path(__file__).resolve().parents[1] / "config/ontology.yaml"])
+    bodies = []
+
+    def handler(req):
+        body = json.loads(req.content)
+        bodies.append(body)
+        if len(bodies) == 1:   # runaway: cut off mid-JSON
+            return httpx.Response(200, json={"message": {"content": '{"relevant": true, "ent'},
+                                             "done_reason": "length"})
+        return httpx.Response(200, json={"message": {"content": json.dumps(
+            {"relevant": True, "relevance_reason": "r", "language": "en"})}, "done_reason": "stop"})
+
+    cfg = LocalModels(base_url="http://o.test/v1", roles={"agent": LocalRole(model="m", max_output_tokens=50)})
+    out = asyncio.run(LocalLLM(cfg, transport=httpx.MockTransport(handler)).chat_json(
+        "agent", "sys", "user", schema_for(onto)))
+    assert out.relevant is True
+    assert bodies[0]["options"]["num_predict"] == 50
+    second = bodies[1]["messages"]
+    assert len(second) == 3 and "cut off" in second[-1]["content"]
+    assert all('"ent' not in m["content"] for m in second)   # truncated answer not resent

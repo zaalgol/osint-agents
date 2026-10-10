@@ -30,6 +30,10 @@ from osint.core.config import LocalModels, LocalRole
 log = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
+TOO_LONG = ("Your previous answer was cut off at the output limit. Answer again, more "
+            "selectively: only the most important items (at most 25 entities, 15 relations, "
+            "15 events), each quote under 200 characters, and never repeat an item.")
+
 # Set by the orchestrator per task, so usage from concurrent tasks is attributed correctly.
 usage_tag: ContextVar[int | None] = ContextVar("llm_usage_tag", default=None)
 
@@ -93,7 +97,14 @@ class LocalLLM:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         last_err: Exception | None = None
         for attempt in range(2):
-            raw = await self._chat(r, messages, schema)
+            raw, truncated = await self._chat(r, messages, schema)
+            if truncated:
+                # hit max_output_tokens (often a repetition loop): ask again, more selectively;
+                # the cut-off answer is not sent back (long and useless)
+                last_err = LLMError("output exceeded max_output_tokens")
+                log.info("LLM output truncated at the token cap (attempt %d)", attempt + 1)
+                messages = messages[:2] + [{"role": "user", "content": TOO_LONG}]
+                continue
             try:
                 return schema.model_validate_json(raw)
             except ValidationError as e:
@@ -117,21 +128,23 @@ class LocalLLM:
 
     # ------------------------------------------------------------------ backends
 
-    async def _chat(self, r: LocalRole, messages: list[dict], schema: type[BaseModel]) -> str:
+    async def _chat(self, r: LocalRole, messages: list[dict],
+                    schema: type[BaseModel]) -> tuple[str, bool]:
         prompt_hash = hashlib.sha256(
             json.dumps(messages, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
         t0 = time.monotonic()
         async with self._sem:
             if self.cfg.backend == "ollama":
-                content, tin, tout = await self._ollama(r, messages, schema)
+                content, tin, tout, truncated = await self._ollama(r, messages, schema)
             else:
-                content, tin, tout = await self._openai(r, messages, schema)
+                content, tin, tout, truncated = await self._openai(r, messages, schema)
         self.usage_log.append(LLMUsage(r.model, prompt_hash, tin, tout,
                                        int((time.monotonic() - t0) * 1000), usage_tag.get()))
-        return content
+        return content, truncated
 
-    async def _ollama(self, r: LocalRole, messages, schema) -> tuple[str, int | None, int | None]:
+    async def _ollama(self, r: LocalRole, messages, schema
+                      ) -> tuple[str, int | None, int | None, bool]:
         base = self.cfg.base_url.removesuffix("/v1")
         body = {
             "model": r.model,
@@ -156,9 +169,10 @@ class LocalLLM:
             raise LLMError(f"ollama {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
         return (data["message"]["content"], data.get("prompt_eval_count"),
-                data.get("eval_count"))
+                data.get("eval_count"), data.get("done_reason") == "length")
 
-    async def _openai(self, r: LocalRole, messages, schema) -> tuple[str, int | None, int | None]:
+    async def _openai(self, r: LocalRole, messages, schema
+                      ) -> tuple[str, int | None, int | None, bool]:
         body = {
             "model": r.model,
             "messages": messages,
@@ -176,5 +190,6 @@ class LocalLLM:
             raise LLMError(f"openai-compatible {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
         usage = data.get("usage") or {}
-        return (data["choices"][0]["message"]["content"], usage.get("prompt_tokens"),
-                usage.get("completion_tokens"))
+        choice = data["choices"][0]
+        return (choice["message"]["content"], usage.get("prompt_tokens"),
+                usage.get("completion_tokens"), choice.get("finish_reason") == "length")
