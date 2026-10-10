@@ -81,6 +81,8 @@ Let Claude plan, collect, analyse and report:
 uv run python -m osint new "redsea" --focus "Houthi attacks on Red Sea shipping since 2025: actors, targets, claims" --plan --run
 uv run python -m osint analyze redsea          # findings with proof ([F:n])
 uv run python -m osint run redsea              # collect what the analyst asked for
+uv run python -m osint assess redsea           # threat assessment (capability/intent/indicators)
+uv run python -m osint red-team redsea         # challenge the findings before reporting
 uv run python -m osint report redsea           # report, citation gate, MD + HTML
 uv run python -m osint ask redsea "Which vessels were hit in 2026?"
 uv run python -m osint explain 12              # proof tree of finding F:12
@@ -111,6 +113,8 @@ uv run python -m osint resume redsea
 | `osint plan <inv>` | Claude writes key questions and queues multilingual collection |
 | `osint analyze <inv>` | Claude records findings (facts, patterns, assessments, gaps) with proof |
 | `osint report <inv>` | Claude writes the report; the citation gate checks it (auto-audit on failure); renders MD + HTML |
+| `osint assess <inv>` | Claude threat assessment: capability, intent, opportunity, likelihood/impact, indicators & warnings |
+| `osint red-team <inv>` | Claude challenges the findings (ACH, alternative hypotheses, gaps); run it before a final report |
 | `osint report-verify <id>` | Re-run the citation gate and list every problem sentence |
 | `osint report-override <id> --reason` | Release a report that failed the gate (recorded on the report) |
 | `osint ask <inv> "<question>"` | Read-only Q&A over the knowledge base, with citations |

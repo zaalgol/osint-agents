@@ -4,7 +4,9 @@ Audience: $audience
 Focus: $focus
 
 1. Read `list_findings`, `investigation_overview` and `timeline`; use `get_evidence` to
-   check exact wording and sourcing of what you cite.
+   check exact wording and sourcing of what you cite. Findings of kind "hypothesis" and
+   "gap" come from the red-team pass. Reflect them in the judgements' confidence and in
+   "Gaps and alternative explanations".
 2. Write the report in Markdown with this structure:
    - `# Title`
    - `## Key judgements`: 3-6 bullet points, each an assessed statement with estimative

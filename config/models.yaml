@@ -36,4 +36,6 @@ claude:
     report: 50
     citation_audit: 30
     link_investigations: 40
+    red_team: 40
+    threat_assessment: 50
     ask: 20

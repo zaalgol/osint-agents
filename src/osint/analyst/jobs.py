@@ -96,6 +96,43 @@ class Analyst:
                               max_turns=self._turns("analyze_investigation", 60), fresh=fresh)
         return JobOutcome(res, {})
 
+    def red_team(self, inv_id: int, max_requests: int = 5, fresh: bool = False) -> JobOutcome:
+        inv = self._inv(inv_id)
+        with self.app.session_factory() as s:
+            n = s.scalar(select(func.count()).where(Finding.investigation_id == inv.id))
+        if not n:
+            return JobOutcome(None, {"skipped": "no findings to challenge (run analyze first)"})
+        prompt = load_prompt("red_team", investigation_name=inv.name, investigation_id=inv.id,
+                             finding_count=n, max_requests=max_requests)
+        res = self.runner.run("red_team", inv.id, prompt, self.system,
+                              fingerprint=fingerprint(self.app, inv.id), max_requests=max_requests,
+                              max_turns=self._turns("red_team", 40), fresh=fresh)
+        return JobOutcome(res, {})
+
+    def threat_assessment(self, inv_id: int, fresh: bool = False) -> JobOutcome:
+        inv = self._inv(inv_id)
+        prompt = load_prompt("threat_assessment", investigation_name=inv.name,
+                             investigation_id=inv.id,
+                             focus=(inv.seed or {}).get("focus") or inv.name)
+        res = self.runner.run("threat_assessment", inv.id, prompt, self.system,
+                              fingerprint=fingerprint(self.app, inv.id), max_requests=0,
+                              max_turns=self._turns("threat_assessment", 50), fresh=fresh)
+        return JobOutcome(res, {})
+
+    def red_team_current(self, inv_id: int) -> bool:
+        """Has a red-team pass run after the most recent analysis/assessment?"""
+        from osint.storage.db import ClaudeJob
+
+        with self.app.session_factory() as s:
+            def last(job: str):
+                return s.scalar(select(func.max(ClaudeJob.finished_at)).where(
+                    ClaudeJob.investigation_id == inv_id, ClaudeJob.job == job,
+                    ClaudeJob.status == "done"))
+            rt = last("red_team")
+            analysis = max((t for t in (last("analyze_investigation"),
+                                        last("threat_assessment")) if t), default=None)
+        return rt is not None and (analysis is None or rt >= analysis)
+
     def report(self, inv_id: int, audience: str = "security analysts and decision makers",
                audit: bool = True, fresh: bool = False) -> JobOutcome:
         inv = self._inv(inv_id)

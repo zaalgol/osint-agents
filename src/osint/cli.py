@@ -737,7 +737,11 @@ def report(
     """Claude writes the report; the citation gate verifies it; render MD + HTML."""
     with App().session_factory() as s:
         inv_id = _find_investigation(s, investigation).id
-    out = _claude_call(_analyst().report, inv_id, audience=audience, audit=not no_audit,
+    analyst = _analyst()
+    if not analyst.red_team_current(inv_id):
+        console.print("[yellow]note:[/] no red-team pass since the latest analysis; consider "
+                      f"`osint red-team {investigation}` before a final report")
+    out = _claude_call(analyst.report, inv_id, audience=audience, audit=not no_audit,
                        fresh=fresh)
     x = out.extra
     if not x.get("report_id"):
@@ -751,6 +755,47 @@ def report(
         console.print(f"  {k}: {v}")
     if x["status"] != "verified":
         console.print(f"  details: uv run python -m osint report-verify {x['report_id']}")
+    _job_footer(out.result)
+
+
+@app.command("red-team")
+def red_team_cmd(
+    investigation: str,
+    max_requests: Annotated[int, typer.Option(help="Discriminating collection requests.")] = 5,
+    fresh: bool = False,
+) -> None:
+    """Claude challenges the findings: ACH, alternative hypotheses, gaps, downgrades."""
+    with App().session_factory() as s:
+        inv_id = _find_investigation(s, investigation).id
+    out = _claude_call(_analyst().red_team, inv_id, max_requests=max_requests, fresh=fresh)
+    if out.result is None:
+        console.print(out.extra.get("skipped"))
+        return
+    d = out.result.data or {}
+    console.print(f"verdict: [bold]{d.get('verdict', '?')}[/]")
+    for c in d.get("challenged", []):
+        console.print(f"  {c.get('finding')}: {c.get('issue')} "
+                      f"(suggested confidence {c.get('suggested_confidence')})")
+    if d.get("alternative_hypotheses"):
+        console.print(f"  alternative hypotheses: {' '.join(d['alternative_hypotheses'])}")
+    if d.get("gaps"):
+        console.print(f"  gaps: {' '.join(d['gaps'])}")
+    _job_footer(out.result)
+
+
+@app.command()
+def assess(investigation: str, fresh: bool = False) -> None:
+    """Claude threat assessment: capability, intent, opportunity, likelihood, indicators."""
+    with App().session_factory() as s:
+        inv_id = _find_investigation(s, investigation).id
+    out = _claude_call(_analyst().threat_assessment, inv_id, fresh=fresh)
+    d = out.result.data or {}
+    for a in d.get("actors", []):
+        console.print(f"  [bold]{a.get('name')}[/]: {a.get('threat_level')} "
+                      f"({a.get('confidence')} confidence) {' '.join(a.get('findings', []))}")
+    if d.get("summary"):
+        console.print(d["summary"])
+    console.print("  next: osint red-team, then osint report")
     _job_footer(out.result)
 
 

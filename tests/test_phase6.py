@@ -237,3 +237,40 @@ def test_reextract_uses_heavy_model_and_schedule_keeps_role(app6):
     sch = set_schedule(app6, inv, 360, "week", False, extract_role="agent_heavy")
     with app6.session_factory() as s:
         assert s.get(Schedule, sch.id).extract_role == "agent_heavy"
+
+
+@pytest.mark.integration
+def test_red_team_job_and_report_gating(app6):
+    import sys
+    from datetime import UTC, datetime, timedelta
+    from pathlib import Path
+
+    from osint.analyst.jobs import Analyst
+    from osint.llm.claude_cli import ClaudeRunner
+    from osint.storage.db import ClaudeJob, EvidenceLink, Finding
+
+    root = Path(__file__).resolve().parents[1]
+    runner = ClaudeRunner(app6, binary=[sys.executable, str(root / "tests" / "fake_claude.py")])
+    a = Analyst(app6, runner=runner)
+    inv, did = _doc(app6, "The Grey Front attacked the port on 1 May 2026, police said.")
+    assert a.red_team(inv).extra["skipped"].startswith("no findings")
+    with app6.session_factory() as s, s.begin():
+        f = Finding(investigation_id=inv, kind="fact", text="x", confidence=0.6,
+                    epistemic_status="reported", created_by="t")
+        s.add(f)
+        s.flush()
+        from osint.storage.db import Document
+
+        d = s.get(Document, did)
+        s.add(EvidenceLink(target_type="finding", target_id=f.id, artifact_id=d.artifact_id,
+                           document_id=did, quote_original="The Grey Front attacked the port",
+                           quote_verified=True, created_by="t"))
+    assert a.red_team_current(inv) is False
+    out = a.red_team(inv)
+    assert out.result is not None and not out.result.cached
+    assert a.red_team_current(inv) is True
+    with app6.session_factory() as s, s.begin():   # a newer analysis makes it stale again
+        s.add(ClaudeJob(investigation_id=inv, job="analyze_investigation", model="x",
+                        input_hash="h" * 64, status="done",
+                        finished_at=datetime.now(UTC) + timedelta(minutes=1)))
+    assert a.red_team_current(inv) is False
