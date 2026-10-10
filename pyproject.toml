@@ -30,6 +30,7 @@ dependencies = [
     "yt-dlp>=2025.1",
     "dnspython>=2.7",
     "psutil>=6.0",
+    "pillow>=12.3.0",
 ]
 
 [project.optional-dependencies]

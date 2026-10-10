@@ -103,6 +103,9 @@ class MediaSettings(BaseModel):
     whisper_model: str = "small"               # tiny | base | small | medium | large-v3
     whisper_device: str = "auto"               # auto (GPU if CUDA libs load) | cuda | cpu
     max_transcribe_minutes: int = 20
+    ocr: bool = True                           # images + scanned PDFs via the vision role
+    ocr_role: str = "vision"
+    max_ocr_pages: int = 10                    # per scanned PDF
 
 
 class TorSettings(BaseModel):

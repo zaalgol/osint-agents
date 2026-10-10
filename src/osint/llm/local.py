@@ -92,9 +92,16 @@ class LocalLLM:
         self.usage_log = [u for u in self.usage_log if u.tag != tag]
         return mine
 
-    async def chat_json(self, role: str, system: str, user: str, schema: type[T]) -> T:
+    async def chat_json(self, role: str, system: str, user: str, schema: type[T],
+                        images: list[bytes] | None = None) -> T:
+        """Structured chat. `images` (PNG/JPEG bytes) need a vision-capable model."""
+        import base64
+
         r = self.role(role)
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        first: dict = {"role": "user", "content": user}
+        if images:
+            first["images"] = [base64.b64encode(b).decode("ascii") for b in images]
+        messages = [{"role": "system", "content": system}, first]
         last_err: Exception | None = None
         for attempt in range(2):
             raw, truncated = await self._chat(r, messages, schema)
@@ -173,9 +180,17 @@ class LocalLLM:
 
     async def _openai(self, r: LocalRole, messages, schema
                       ) -> tuple[str, int | None, int | None, bool]:
+        def openai_message(m: dict) -> dict:
+            if not m.get("images"):
+                return m
+            parts = [{"type": "text", "text": m["content"]}] + [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}}
+                for b in m["images"]]
+            return {"role": m["role"], "content": parts}
+
         body = {
             "model": r.model,
-            "messages": messages,
+            "messages": [openai_message(m) for m in messages],
             "temperature": r.temperature if r.temperature is not None else 0.2,
             "response_format": {
                 "type": "json_schema",

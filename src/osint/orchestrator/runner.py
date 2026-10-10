@@ -30,7 +30,7 @@ from osint.extraction.writer import ExtractionWriter
 from osint.llm.local import usage_tag
 from osint.orchestrator import queue
 from osint.resolution.resolver import add_ref
-from osint.storage.db import Artifact, Capture, Document, Investigation, RunLog, Task
+from osint.storage.db import Artifact, Capture, Document, Investigation, ReviewItem, RunLog, Task
 from osint.storage.raw_store import BlockedContent
 
 log = logging.getLogger(__name__)
@@ -254,7 +254,7 @@ class Runner:
                         stats["blocked"] += 1
                         self._report_block(s, out.meta.final_url or out.meta.url,
                                            extra["blocked"], extra.get("route_attempts"))
-                    if out.parse and should_parse(out.mime):
+                    if out.parse and should_parse(out.mime, self.app.settings.media.ocr):
                         queue.enqueue(s, TaskSpec(investigation_id=self.inv_id, type="parse",
                                                   plugin="parse", params={"artifact_id": art.id},
                                                   priority=50))
@@ -324,8 +324,20 @@ class Runner:
             (art.capture_meta or {}).get("extra", {}).get("charset"), rendered_bytes,
             self.app.settings.extraction.min_text_chars,
         )
+        media_meta: dict = {}
+        if doc is None and self.app.settings.media.ocr:
+            doc, media_meta = await self._ocr(art, data)
+        if media_meta.get("exif", {}).get("gps") or media_meta.get("exif", {}).get("Make"):
+            with self.Session() as s, s.begin():
+                # where/when/which camera is a lead (and can identify people): a human looks
+                s.add(ReviewItem(investigation_id=self.inv_id, kind="media_metadata",
+                                 reason="image carries EXIF metadata"
+                                        + (" with a GPS position" if media_meta["exif"].get("gps")
+                                           else ""),
+                                 payload={"artifact_id": artifact_id, **media_meta},
+                                 created_by="media:exif"))
         if doc is None:
-            return {"document": None, "reason": "no extractable text"}
+            return {"document": None, "reason": "no extractable text", **media_meta}
         with self.Session() as s, s.begin():
             existing = s.scalar(select(Document).where(Document.artifact_id == artifact_id,
                                                        Document.text_sha256 == doc.text_sha256))
@@ -345,6 +357,38 @@ class Runner:
                                           plugin="extract",
                                           params={"document_id": existing.id}, priority=80))
             return {"document": existing.id, "chars": len(doc.text), "extract": enough}
+
+    async def _ocr(self, art: Artifact, data: bytes):
+        """Images and scanned PDFs: EXIF + OCR with the vision model. (doc|None, meta)"""
+        from osint.evidence.parse import PARSER_VERSION, ParsedDoc, needs_ocr
+        from osint.media import image
+
+        kind = needs_ocr(art.mime, data)
+        if kind is None:
+            return None, {}
+        meta: dict = {}
+        if kind == "image":
+            meta["exif"] = await asyncio.to_thread(image.exif, data)
+            png = await asyncio.to_thread(image.to_png_for_vision, data)
+            pages = [png] if png else []
+        else:
+            pages = await asyncio.to_thread(image.pdf_pages_png, data,
+                                            self.app.settings.media.max_ocr_pages)
+        if not pages:
+            return None, meta
+        role = self.app.settings.media.ocr_role
+        try:
+            text, starts, lang = await image.ocr_images(self.services["llm"], role, pages)
+        except Exception as e:  # noqa: BLE001 - no vision model: keep the metadata
+            log.warning("OCR failed for artifact %s: %s", art.id, e)
+            return None, {**meta, "ocr_error": str(e)[:300]}
+        if not text:
+            return None, {**meta, "ocr": "no text"}
+        model = self.services["llm"].role(role).model
+        doc = ParsedDoc(text=text, parser=f"ocr:{PARSER_VERSION}/{model}", lang=lang,
+                        meta={"ocr": image.ocr_meta(model, len(pages)), "page_starts": starts,
+                              **({"exif": meta["exif"]} if meta.get("exif") else {})})
+        return doc, meta
 
     async def _extract(self, task: Task) -> dict:
         doc_id = int(task.params["document_id"])

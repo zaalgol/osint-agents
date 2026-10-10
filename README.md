@@ -196,6 +196,13 @@ as evidence of a denial, not as a link. Claude sees them separately
   Chromium, because the usual decoder (PyAV) is blocked by Windows Application Control
   here. It runs on the GPU if NVIDIA's cuBLAS/cuDNN libraries load, otherwise on CPU
   (about 0.5x real time). Transcripts are labelled as machine transcription.
+- **Images and scanned PDFs:** images get their EXIF read (camera, original time, GPS).
+  EXIF with a GPS position or camera details opens a `media_metadata` review item, since
+  it's a lead and can identify people. Text in images and in PDFs without a text layer is
+  transcribed by the `vision` role (`qwen3.6:27b`; in a live test it read
+  English/Arabic/Russian exactly, ~25 s per page). Those documents have parser `ocr:...`
+  and `meta.ocr.machine_read = true`. A model can misread, so check quotes against the
+  image. `media.ocr: false` turns it off.
 - **Face redaction:** `osint evidence bundle <inv> --redact-faces` blurs faces in
   screenshots (OpenCV YuNet, model hash-pinned), drops PDF/DOM/media captures that can't
   be redacted, and records each redacted file's original hash. Detection isn't perfect:
@@ -204,10 +211,16 @@ as evidence of a denial, not as a link. Claude sees them separately
   location, because sites localize by IP (e.g. a weather/location widget in a news
   header). Use the VPN route or redact before sharing.
 
-**Sanctions screening policy:** a match becomes a fact (`designated_by`, citing the
-verbatim list entry) only for organizations with a specific, unambiguous name. People,
-single-word names, and names shared by several listed parties (e.g. "Ansar Allah" is also
-a Hizballah alias) become `sanctions_match` review items for an analyst.
+**Sanctions screening** covers the UN, OFAC, EU and UK lists. A match becomes a fact
+(`designated_by`, citing the verbatim list entry) only for organizations with a specific,
+unambiguous name, matched on the entry's primary name or on two of its names. These become
+`sanctions_match` review items for an analyst instead:
+- people
+- single-word names
+- names shared by different listed parties ("Ansar Allah" is also a Hizballah alias)
+- a match on one alias only ("Islamic Jihad" is an OFAC alias of Hizballah)
+
+The same party on several lists counts as one party.
 
 ### Contamination: blocklists and purge
 

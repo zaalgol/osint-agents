@@ -48,6 +48,8 @@ network:
   max_bytes: 52428800
 
 media:
+  ocr: true                       # images and scanned PDFs: EXIF + OCR with the vision role
+  max_ocr_pages: 10
   transcribe_missing_captions: true   # Whisper for videos without captions (uv sync --extra media)
   whisper_model: small
   whisper_device: auto                # GPU if CUDA libs load, else CPU (~0.5x realtime)

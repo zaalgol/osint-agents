@@ -16,6 +16,12 @@ local:
       temperature: 0.2
       keep_alive: 1m              # big (spills into RAM): release soon after use
       max_output_tokens: 6000
+    vision:                       # OCR of images and scanned PDFs (needs a vision model)
+      model: qwen3.6:27b
+      context: 16384
+      temperature: 0.0
+      keep_alive: 1m
+      max_output_tokens: 4000
     embedding:
       model: bge-m3
       dimensions: 1024            # must match the vector columns in the DB schema

@@ -34,9 +34,24 @@ class ParsedDoc:
         return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
 
 
-def should_parse(mime: str | None) -> bool:
+IMAGES = ("image/jpeg", "image/png", "image/webp", "image/gif", "image/tiff", "image/bmp")
+
+
+def should_parse(mime: str | None, ocr: bool = False) -> bool:
     m = (mime or "").lower()
+    if ocr and m.startswith(IMAGES):
+        return True
     return not any(m.startswith(p) for p in NO_DOCUMENT)
+
+
+def needs_ocr(mime: str | None, data: bytes) -> str | None:
+    """'image' or 'pdf' when the artifact has no text layer and OCR could read it."""
+    m = (mime or "").lower()
+    if m.startswith(IMAGES):
+        return "image"
+    if m == "application/pdf" or data[:5] == b"%PDF-":
+        return "pdf"
+    return None
 
 
 def _parse_date(value: Any) -> datetime | None:
