@@ -171,6 +171,7 @@ class LocalRole(BaseModel):
     temperature: float | None = None
     dimensions: int | None = None
     keep_alive: str | None = None     # Ollama: how long the model stays loaded ("1m", "0")
+    max_output_tokens: int | None = None  # cap per call (bounds runaway generations)
 
 
 class LocalModels(BaseModel):

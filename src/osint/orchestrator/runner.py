@@ -351,7 +351,21 @@ class Runner:
             ctx.settings.extraction.llm_role = task.params["role"]
         results: list[tuple[int, ExtractionResult, str]] = []
         relevant_chunks = 0
+        # Per-chunk checkpoint: a resumed task continues from the next chunk. Valid only for
+        # the same text, extractors and model role.
+        key = {"text_sha256": doc.text_sha256, "extractors": [e.ident for e in extractors],
+               "role": ctx.settings.extraction.llm_role}
+        cp = task.checkpoint or {}
+        done: set[int] = set()
+        if cp.get("key") == key:
+            for r in cp.get("results", []):
+                results.append((r["offset"], ExtractionResult.model_validate(r["result"]),
+                                r["extractor"]))
+            done = set(cp.get("done_offsets", []))
+            relevant_chunks = int(cp.get("relevant_chunks", 0))
         for offset, chunk in chunks:
+            if offset in done:
+                continue
             view = DocumentView(id=doc.id, artifact_id=doc.artifact_id, text=chunk,
                                 title=doc.title, url=url, lang=doc.lang,
                                 published_at=doc.published_at,
@@ -366,6 +380,12 @@ class Runner:
                 if not res.relevant:
                     chunk_relevant = False  # skip the remaining extractors for this chunk
             relevant_chunks += int(chunk_relevant)
+            done.add(offset)
+            with self.Session() as s, s.begin():
+                queue.heartbeat(s, task.id, checkpoint={
+                    "key": key, "done_offsets": sorted(done), "relevant_chunks": relevant_chunks,
+                    "results": [{"offset": o, "extractor": x, "result": r.model_dump(mode="json")}
+                                for o, r, x in results]})
 
         with self.Session() as s, s.begin():
             doc = s.get(Document, doc_id)

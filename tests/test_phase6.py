@@ -374,3 +374,48 @@ def test_unload_all_asks_ollama_to_release_models():
     done = asyncio.run(llm.unload_all())
     assert sorted(done) == ["a:14b", "b:27b"]
     assert all(p == "/api/generate" and b["keep_alive"] == 0 for p, b in seen)
+
+
+@pytest.mark.integration
+def test_extraction_resumes_from_the_next_chunk(app6):
+    import json
+
+    import httpx
+
+    from osint.core.models import TaskSpec
+    from osint.orchestrator import queue
+    from osint.orchestrator.runner import Runner
+    from osint.storage.db import Task
+
+    app6.settings.extraction.chunk_chars = 300
+    app6.settings.extraction.chunk_overlap = 0
+    sentences = [f"Paragraph {i}: the Ash{i} Brigade operated near the river crossing." for i in range(15)]
+    inv, did = _doc(app6, "\n\n".join(sentences))
+    with app6.session_factory() as s, s.begin():
+        tid, _ = queue.enqueue(s, TaskSpec(investigation_id=inv, type="extract", plugin="extract",
+                                           params={"document_id": did}))
+    seen_chunks: list[str] = []
+    fail_once = {"armed": True}
+
+    def llm(req):
+        prompt = json.loads(req.content)["messages"][-1]["content"]
+        first = prompt.split("=== TEXT START ===\n")[1][:40]
+        if len(seen_chunks) == 1 and fail_once["armed"]:
+            fail_once["armed"] = False
+            return httpx.Response(500, text="simulated crash")
+        seen_chunks.append(first)
+        return httpx.Response(200, json={"message": {"content": json.dumps(
+            {"relevant": True, "relevance_reason": "x", "language": "en"})}})
+
+    async def go():
+        async with app6.services(llm_transport=httpx.MockTransport(llm), browser=False) as svc:
+            return await Runner(app6, inv, svc, on_event=lambda m: None).run()
+
+    asyncio.run(go())   # chunk 1 ok, chunk 2 fails -> retry resumes at chunk 2
+    with app6.session_factory() as s:
+        t = s.get(Task, tid)
+        assert t.status == "done" and t.attempts == 2
+        n_chunks = t.result["chunks"]
+    assert n_chunks >= 3
+    assert len(seen_chunks) == n_chunks           # every chunk extracted exactly once
+    assert len(set(seen_chunks)) == n_chunks

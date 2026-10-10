@@ -139,7 +139,8 @@ class LocalLLM:
             "stream": False,
             "format": schema.model_json_schema(),
             "options": {k: v for k, v in
-                        {"num_ctx": r.context, "temperature": r.temperature}.items()
+                        {"num_ctx": r.context, "temperature": r.temperature,
+                         "num_predict": r.max_output_tokens}.items()
                         if v is not None},
         }
         if r.model not in self._think_unsupported:
