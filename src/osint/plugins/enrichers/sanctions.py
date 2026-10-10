@@ -295,7 +295,7 @@ class SanctionsEnricher(Enricher):
                     "kind": "sanctions_match",
                     "reason": f"possible {e.authority} listing ({e.ref}, name score {sc:.2f}); "
                               "confirm with identifiers before treating as fact",
-                    "list_entry": e.line})
+                    "list_entry": e.line, "authority": e.authority})
             return res
         ents = [ExtractedEntity(name=entity.name, type=entity.type, quote=entity.name)] \
             if entity.name in res.facts_text else []
@@ -321,7 +321,7 @@ class SanctionsEnricher(Enricher):
                     "kind": "sanctions_match",
                     "reason": f"possible {e.authority} listing ({e.ref}); {why}: confirm "
                               "it is the same party before treating as fact",
-                    "list_entry": e.line})
+                    "list_entry": e.line, "authority": e.authority})
                 continue
             ents.append(ExtractedEntity(name=e.authority, type="organization", quote=e.authority)
                         if e.authority in res.facts_text else

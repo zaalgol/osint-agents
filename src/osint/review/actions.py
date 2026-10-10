@@ -30,6 +30,16 @@ DISMISS_ONLY = {"quote_not_found", "weak_citation", "ontology", "unresolved", "b
                 "enrichment", "integrity_alert"}
 
 
+# list-entry prefix (see plugins/enrichers/sanctions.py) -> designating authority
+LIST_AUTHORITIES = (
+    ("UN Security Council", "UN Security Council"),
+    ("OFAC SDN", "US Treasury OFAC"),
+    ("EU consolidated", "Council of the European Union"),
+    ("UK Sanctions List", "UK Government (FCDO)"),
+)
+ACKNOWLEDGE = {"contradiction", "media_metadata"}   # accept = seen; both versions stay
+
+
 class ReviewError(ValueError):
     pass
 
@@ -94,7 +104,7 @@ def decide(s: Session, app, review_id: int, decision: str, actor: str,
         _stamp(item, "accepted", actor, note)
         return {"review": review_id, "status": "accepted", "applied_revision": p["revision_id"]}
 
-    if kind == "contradiction":
+    if kind in ACKNOWLEDGE:
         _stamp(item, "accepted", actor, note)   # acknowledged: both versions stay visible
         return {"review": review_id, "status": "accepted"}
 
@@ -114,7 +124,10 @@ def _accept_sanctions(s: Session, app, item: ReviewItem, actor: str) -> int:
     from osint.core.models import ExtractedEntity
     from osint.resolution.resolver import add_ref
 
-    authority = "UN Security Council" if line.startswith("UN ") else "US Treasury OFAC"
+    authority = p.get("authority") or next(
+        (a for prefix, a in LIST_AUTHORITIES if line.startswith(prefix)), None)
+    if authority is None:
+        raise ReviewError("unknown sanctions list: can't tell which authority designated this")
     # people resolve within the investigation by alias: make sure this exact entity is
     # in scope and findable under its name, so the relation lands on it (not a namesake)
     from sqlalchemy.dialects.postgresql import insert as pg_insert

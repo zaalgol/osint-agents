@@ -313,3 +313,34 @@ def test_integrity_check_detects_tampering(app5):
     assert last_result(app5)["ok"] is False
     with app5.session_factory() as s:
         assert s.scalar(select(ReviewItem).where(ReviewItem.kind == "integrity_alert"))
+
+
+@pytest.mark.integration
+def test_accepted_eu_match_names_the_eu_and_unknown_lists_are_refused(app5):
+    from osint.enrichment.base import EnrichmentResult, persist_enrichment
+    from osint.review.actions import ReviewError, decide
+    from osint.storage.db import Entity, Relation, ReviewItem
+
+    inv = _inv(app5)
+    with app5.session_factory() as s, s.begin():
+        e = Entity(type="person", canonical_name=f"Ali Test{uuid.uuid4().hex[:4]}")
+        s.add(e)
+        s.flush()
+        eid, name = e.id, e.canonical_name
+    eu = f"EU consolidated financial sanctions list EU.1.2 [YEM]: {name}"
+    odd = f"Some Other List 7: {name}"
+    res = EnrichmentResult(facts_text=f"Sanctions screening for: {name} (person)\n{eu}\n{odd}",
+                           reviews=[{"kind": "sanctions_match", "reason": "eu", "list_entry": eu},
+                                    {"kind": "sanctions_match", "reason": "odd", "list_entry": odd}])
+    with app5.session_factory() as s, s.begin():
+        persist_enrichment(s, app5, inv, eid, "enricher:sanctions@0.1.0", "sanctions", res)
+        ids = dict(s.execute(select(ReviewItem.reason, ReviewItem.id).where(
+            ReviewItem.investigation_id == inv)).all())
+    with app5.session_factory() as s, s.begin():
+        out = decide(s, app5, ids["eu"], "accept", "human:analyst")
+    with app5.session_factory() as s:
+        rel = s.get(Relation, out["relation_id"])
+        dst = s.get(Entity, rel.dst_entity_id)
+        assert dst.canonical_name == "Council of the European Union"
+    with app5.session_factory() as s, s.begin(), pytest.raises(ReviewError, match="unknown"):
+        decide(s, app5, ids["odd"], "accept", "human:analyst")
