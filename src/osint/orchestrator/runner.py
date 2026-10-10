@@ -113,9 +113,11 @@ class Runner:
                    for i in range(self.net_workers)]
         workers += [asyncio.create_task(self._worker(LLM_TYPES, f"llm{i}"))
                     for i in range(self.llm_workers)]
+        recycler = asyncio.create_task(self._recycle_llm())
         try:
             await asyncio.gather(*workers)
         finally:
+            recycler.cancel()
             for w in workers:
                 w.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
@@ -143,6 +145,26 @@ class Runner:
             waited += 5
         if waited:
             self._mem_warned = False
+
+    async def _recycle_llm(self) -> None:
+        """Unload Ollama models when RAM runs low; they reload on the next request."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        llm = self.services.get("llm")
+        if llm is None:
+            return
+        floor = self.app.settings.concurrency.recycle_llm_below_gb * 1024 ** 3
+        last = 0.0
+        while True:
+            await asyncio.sleep(30)
+            if psutil.virtual_memory().available < floor and time.monotonic() - last > 180:
+                last = time.monotonic()
+                models = await llm.unload_all()
+                free = psutil.virtual_memory().available / 1024 ** 3
+                self.on_event(f"[yellow]RAM low[/] ({free:.1f} GB): recycled local models "
+                              f"{models} to free Ollama's memory")
 
     async def _worker(self, types: list[str], name: str) -> None:
         while not self._stop.is_set():

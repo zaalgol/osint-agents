@@ -167,8 +167,11 @@ uv run python -m osint resume redsea
 Workers stop claiming new tasks when free RAM drops below `concurrency.min_free_ram_gb`
 (running tasks finish), and Chromium screenshot pages are capped by
 `concurrency.browser_pages`. Ollama unloads the 27B model one minute after its last use
-(`keep_alive` per role in `models.yaml`); its runner process holds RAM even when the model
-is on the GPU.
+(`keep_alive` per role in `models.yaml`). Ollama's runner process (`llama-server`) keeps
+growing in system RAM during long runs (measured: +9 GB in about 30 minutes) even with
+the model fully on the GPU. When available RAM drops below
+`concurrency.recycle_llm_below_gb`, the runner unloads the models, which frees that memory
+at once, and the next request reloads them.
 
 ### Claims vs facts
 

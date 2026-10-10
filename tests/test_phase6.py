@@ -351,3 +351,26 @@ def test_memory_guard_pauses_until_ram_recovers(monkeypatch):
     asyncio.run(r._wait_for_memory())
     assert next(readings, None) is None   # all three readings consumed
     assert len([e for e in events if "low memory" in e]) == 1
+
+
+def test_unload_all_asks_ollama_to_release_models():
+    import json
+
+    import httpx
+
+    from osint.core.config import LocalModels, LocalRole
+    from osint.llm.local import LocalLLM
+
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(200, json={})
+
+    cfg = LocalModels(base_url="http://ollama.test/v1", roles={
+        "agent": LocalRole(model="a:14b"), "agent_heavy": LocalRole(model="b:27b"),
+        "embedding": LocalRole(model="a:14b")})
+    llm = LocalLLM(cfg, transport=httpx.MockTransport(handler))
+    done = asyncio.run(llm.unload_all())
+    assert sorted(done) == ["a:14b", "b:27b"]
+    assert all(p == "/api/generate" and b["keep_alive"] == 0 for p, b in seen)

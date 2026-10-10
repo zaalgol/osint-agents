@@ -66,6 +66,23 @@ class LocalLLM:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def unload_all(self) -> list[str]:
+        """Ask Ollama to unload every model of our roles (frees its runner's RAM; the next
+        request reloads it). In-flight requests finish first."""
+        if self.cfg.backend != "ollama":
+            return []
+        base = self.cfg.base_url.removesuffix("/v1")
+        done = []
+        for r in {r.model for r in self.cfg.roles.values()}:
+            try:
+                resp = await self._client.post(f"{base}/api/generate",
+                                               json={"model": r, "keep_alive": 0})
+                if resp.status_code == 200:
+                    done.append(r)
+            except httpx.HTTPError:
+                continue
+        return done
+
     def drain_usage(self, tag: int | None) -> list[LLMUsage]:
         mine = [u for u in self.usage_log if u.tag == tag]
         self.usage_log = [u for u in self.usage_log if u.tag != tag]
