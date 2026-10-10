@@ -60,6 +60,7 @@ telegram_public_collector = "osint.plugins.collectors.telegram_public:TelegramPu
 wayback_collector = "osint.plugins.collectors.wayback:WaybackCollector"
 gdelt_collector = "osint.plugins.collectors.gdelt:GdeltCollector"
 youtube_collector = "osint.plugins.collectors.youtube:YoutubeCollector"
+paste_collector = "osint.plugins.collectors.paste:PasteCollector"
 rdap_enricher = "osint.plugins.enrichers.rdap:RdapEnricher"
 geocode_enricher = "osint.plugins.enrichers.geocode:GeocodeEnricher"
 btc_enricher = "osint.plugins.enrichers.btc:BtcEnricher"

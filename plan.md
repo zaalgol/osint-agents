@@ -475,7 +475,7 @@ A web UI (FastAPI plus a graph view such as Cytoscape.js or Sigma.js) comes in a
 - Proof trees (`inference`), `osint explain`, corroboration / independent-source clustering, contradiction tracking.
 - Merkle manifests, signing, RFC 3161 / OpenTimestamps, `verify-evidence`, `bundle` export with a standalone `verify.py`.
 
-**Phase 4: Breadth (ongoing)**: no-account sources, enrichers, exporters and UI done 2026-10-10. Account-based sources (Telegram API, Reddit API, ACLED) are deferred by user decision. Whisper transcription, image EXIF + vision-model OCR (images, scanned PDFs) and EU/UK sanctions lists are done. Paste sites and the SQLite lite backend are still open
+**Phase 4: Breadth (ongoing)**: no-account sources, enrichers, exporters and UI done 2026-10-10. Account-based sources (Telegram API, Reddit API, ACLED) are deferred by user decision. Whisper transcription, image EXIF + vision-model OCR (images, scanned PDFs) and EU/UK sanctions lists are done. Paste sites are done (by URL + SearXNG `site:` search; the sites' APIs need accounts). The SQLite lite backend is dropped: Postgres from day one (decision 1)
 - More collectors: Telegram, Reddit, YouTube + Whisper, Wayback, paste sites, news APIs, sanctions and terror-designation lists (UN, OFAC, EU), GDELT / ACLED for event data.
 - Enrichers: geocoding, WHOIS/DNS, crypto wallet lookups.
 - Exporters: STIX 2.1, FtM, GEXF.
