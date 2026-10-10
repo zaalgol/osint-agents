@@ -124,6 +124,7 @@ TG_PAGE = """<html><body>
  <span class="tgme_widget_message_views">1.2K</span></div></div>
 <div class="tgme_widget_message_wrap"><div class="tgme_widget_message js-widget_message" data-post="testchan/102">
  <div class="tgme_widget_message_forwarded_from_name">Other Chan</div>
+ <a class="tgme_widget_message_photo_wrap 1 2" href="https://t.me/testchan/102" style="width:800px;background-image:url('https://cdn1.telesco.pe/file/abc.jpg')"></a>
  <div class="tgme_widget_message_text js-message_text">Threat statement against <a href="https://evil.test/x">the port</a></div>
  <a class="tgme_widget_message_date" href="https://t.me/testchan/102"><time datetime="2026-10-02T11:00:00+00:00">x</time></a></div></div>
 <a class="tme_messages_more" data-before="101" href="/s/testchan?before=101"></a>
@@ -138,6 +139,7 @@ def test_telegram_preview_parsing():
     assert [p["id"] for p in posts] == [101, 102]
     assert posts[0]["text"] == "First post\nsecond line"
     assert posts[1]["forwarded_from"] == "Other Chan" and posts[1]["links"] == ["https://evil.test/x"]
+    assert posts[1]["photos"] == ["https://cdn1.telesco.pe/file/abc.jpg"] and posts[0]["photos"] == []
     assert channel_name("https://t.me/s/testchan") == "testchan" == channel_name("@testchan")
     with pytest.raises(ValueError):
         channel_name("not a channel!")
@@ -152,12 +154,14 @@ def test_telegram_collector_posts_and_incremental_refresh(pg_settings):
     pg_settings.network.per_host_interval_s = 0
     app = App(pg_settings)
     pages = {"https://t.me/s/testchan": TG_PAGE,
-             "https://t.me/s/testchan?before=101": "<html><body></body></html>"}
+             "https://t.me/s/testchan?before=101": "<html><body></body></html>",
+             "https://cdn1.telesco.pe/file/abc.jpg": bytes.fromhex("ffd8ff") + b" fake jpeg"}
 
     async def run(coll, params):
         out = []
         async with app.services(http_transport=httpx.MockTransport(
-                lambda r: resp(200, pages[str(r.url)])), browser=False) as svc:
+                lambda r: resp(200, pages[str(r.url)], "image/jpeg" if r.url.path.endswith(".jpg")
+                               else "text/html")), browser=False) as svc:
             ctx = app.context(None, **svc)
             async for item in coll.collect(coll.parse_params(params), ctx):
                 out.append(item)
@@ -166,7 +170,12 @@ def test_telegram_collector_posts_and_incremental_refresh(pg_settings):
     c = TelegramPublicCollector()
     items = asyncio.run(run(c, {"channels": ["testchan"], "max_posts": 10}))
     posts = [i for i in items if i.meta.platform_id and "/" in i.meta.platform_id]
-    assert [p.meta.platform_id for p in posts] == ["telegram:testchan/102", "telegram:testchan/101"]
+    assert [p.meta.platform_id for p in posts] == ["telegram:testchan/102",
+                                                   "telegram:testchan/102:photo1",
+                                                   "telegram:testchan/101"]
+    photo = posts[1]
+    assert photo.mime == "image/jpeg" and photo.meta.extra["post"] == "https://t.me/testchan/102"
+    posts = [posts[0], posts[2]]
     assert posts[0].meta.posted_at.isoformat().startswith("2026-10-02")
     assert b"Post: https://t.me/testchan/102" in posts[0].data
     assert posts[0].meta.extra["derived_from"]["sha256_page"]

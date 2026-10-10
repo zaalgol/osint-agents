@@ -246,7 +246,7 @@ Extremist sources can carry CSAM or malware.
 | `searxng` | `{"queries": ["..."], "language": "ar", "time_range": "month"}` |
 | `web` | `{"urls": ["https://..."]}` |
 | `rss` | `{"feeds": ["https://.../rss"]}` |
-| `telegram_public` | `{"channels": ["name", "https://t.me/name"], "max_posts": 200, "since": "2026-01-01"}` |
+| `telegram_public` | `{"channels": ["name", "https://t.me/name"], "max_posts": 200, "since": "2026-01-01", "photos": 4}` (photos are captured and OCRed) |
 | `wayback` | `{"urls": ["example.org/page"], "mode": "spread", "max_snapshots": 5}` |
 | `gdelt` | `{"queries": ["houthi sourcelang:arabic"], "timespan": "1w"}` |
 | `youtube` | `{"urls": ["https://www.youtube.com/@channel"], "max_videos": 20}` |

@@ -6,6 +6,9 @@ a derived artifact (post text plus metadata) that records the page's SHA-256 it 
 from, the post's permalink (t.me/<channel>/<id>) and its time. That way every
 citation points to one post, while the page capture proves the post existed as shown.
 
+Photos (communiques are often posted as images) are captured as their own artifacts
+from Telegram's CDN, linked to the post; parsing then reads EXIF and OCRs their text.
+
 Pagination walks back with ?before=<id> until max_posts or `since`. The checkpoint
 keeps the newest post id per channel, so a refresh fetches only newer posts.
 """
@@ -26,6 +29,7 @@ from osint.core.models import CapturedItem, CaptureMeta
 from osint.core.plugins import Collector
 from osint.evidence.capture import capture_url
 
+BG_URL_RE = re.compile(r"background-image:\s*url\(['\"]?([^'\")]+)['\"]?\)")
 CHANNEL_RE = re.compile(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?([A-Za-z0-9_]{4,})")
 
 
@@ -66,7 +70,10 @@ def parse_preview(html_bytes: bytes) -> tuple[dict, list[dict], int | None]:
                  if a.startswith("http")]
         media = node.xpath('.//a[contains(@class,"tgme_widget_message_photo_wrap") or '
                            'contains(@class,"tgme_widget_message_video_player")]/@href')
-        posts.append({"id": post_id, "data_post": data_post, "text": text,
+        photos = [m.group(1) for st in node.xpath(
+            './/a[contains(@class,"tgme_widget_message_photo_wrap")]/@style')
+            if (m := BG_URL_RE.search(st)) and m.group(1).startswith("https://")]
+        posts.append({"id": post_id, "data_post": data_post, "text": text, "photos": photos,
                       "datetime": times[0] if times else None,
                       "forwarded_from": " ".join(fwd.split()) or None,
                       "views": views.strip() or None, "links": links, "media": media})
@@ -80,6 +87,7 @@ class TelegramPublicParams(BaseModel):
     max_posts: int = Field(100, ge=1, le=5000, description="Per channel per run")
     since: str | None = Field(None, description="ISO date; stop at older posts")
     follow_links: bool = Field(False, description="Queue web fetches for links in posts")
+    photos: int = Field(4, ge=0, le=10, description="Photos captured per post (0 = none)")
 
 
 class TelegramPublicCollector(Collector):
@@ -141,6 +149,16 @@ class TelegramPublicCollector(Collector):
                                "post_json": json.dumps(p, ensure_ascii=False)})
                     yield CapturedItem(data=(header + p["text"]).encode("utf-8"), meta=meta,
                                        mime="text/plain", parse=bool(p["text"]))
+                    for n, photo_url in enumerate(p.get("photos", [])[:params.photos], 1):
+                        photo = await capture_url(ctx, photo_url, self.ident, screenshot=False,
+                                                  platform="telegram")
+                        if photo.meta.http_status != 200:
+                            continue
+                        photo.meta.platform_id = f"telegram:{p['data_post']}:photo{n}"
+                        photo.meta.posted_at = posted
+                        photo.meta.extra["post"] = f"https://t.me/{p['data_post']}"
+                        photo.mime = photo.mime if photo.mime.startswith("image/") else "image/jpeg"
+                        yield photo
                     if params.follow_links:
                         for link in p["links"][:5]:
                             yield FollowUp(plugin="web", params={
