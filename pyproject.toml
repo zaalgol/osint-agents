@@ -29,6 +29,7 @@ dependencies = [
     "cryptography>=44",
     "yt-dlp>=2025.1",
     "dnspython>=2.7",
+    "psutil>=6.0",
 ]
 
 [project.optional-dependencies]

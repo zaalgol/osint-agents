@@ -53,6 +53,8 @@ class SearxngSettings(BaseModel):
 class ConcurrencySettings(BaseModel):
     llm_slots: int = 2
     network_tasks: int = 16
+    browser_pages: int = 2            # concurrent Chromium pages (each costs ~200-500 MB)
+    min_free_ram_gb: float = 3.0      # workers pause claiming new tasks below this
 
 
 class EvidenceSettings(BaseModel):
@@ -77,6 +79,12 @@ class NetworkSettings(BaseModel):
     timeout_s: float = 30
     per_host_interval_s: float = 2.0  # politeness / anti-blocking delay between hits per host
     max_bytes: int = 50 * 1024 * 1024
+
+
+class AnalysisSettings(BaseModel):
+    # Claude's confidence *downgrades* apply at once (safe direction); upgrades and
+    # withdrawals always wait for a human in the review queue.
+    auto_apply_downgrades: bool = True
 
 
 class MediaSettings(BaseModel):
@@ -120,6 +128,7 @@ class Settings(BaseSettings):
     network: NetworkSettings = Field(default_factory=NetworkSettings)
     collection: CollectionSettings = Field(default_factory=CollectionSettings)
     media: MediaSettings = Field(default_factory=MediaSettings)
+    analysis: AnalysisSettings = Field(default_factory=AnalysisSettings)
     extraction: ExtractionSettings = Field(default_factory=ExtractionSettings)
     plugin_dirs: list[Path] = Field(default_factory=lambda: [Path("plugins_local")])
     ontology_files: list[Path] = Field(default_factory=lambda: [Path("config/ontology.yaml")])
@@ -158,6 +167,7 @@ class LocalRole(BaseModel):
     context: int | None = None
     temperature: float | None = None
     dimensions: int | None = None
+    keep_alive: str | None = None     # Ollama: how long the model stays loaded ("1m", "0")
 
 
 class LocalModels(BaseModel):

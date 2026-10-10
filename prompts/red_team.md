@@ -20,7 +20,11 @@ relies on them. Existing findings: $finding_count (call `list_findings`).
      source, unverified translation, contradiction); premises = the affected finding and
      its evidence
    Don't restate existing findings. Only add what changes confidence.
-4. Where discriminating evidence could exist, queue collection with `request_collection`
+4. For each finding whose confidence the evidence no longer supports, call
+   `propose_finding_revision` with the new confidence, the reason and the evidence ids
+   (downgrades apply at once). Use withdraw=true only when the finding is shown to be
+   wrong (that goes to a human for approval).
+5. Where discriminating evidence could exist, queue collection with `request_collection`
    (budget: $max_requests).
 
 End with:

@@ -468,7 +468,30 @@ class Finding(Base):
     text: Mapped[str] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Float)
     epistemic_status: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16), default="active",
+                                        server_default="active")  # active | withdrawn
     created_by: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = created()
+
+
+class FindingRevision(Base):
+    """History of confidence changes and withdrawals (who, why, on what evidence)."""
+
+    __tablename__ = "finding_revision"
+    __table_args__ = (
+        CheckConstraint(_in("status", ("proposed", "applied", "rejected")), name="status"),
+    )
+    id: Mapped[int] = pk()
+    finding_id: Mapped[int] = mapped_column(ForeignKey("finding.id"), index=True)
+    old_confidence: Mapped[float] = mapped_column(Float)
+    new_confidence: Mapped[float] = mapped_column(Float)
+    withdraw: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(Text)
+    evidence_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    proposed_by: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(16), default="proposed")
+    decided_by: Mapped[str | None] = mapped_column(String(200))
+    decided_at: Mapped[datetime | None] = mapped_column()
     created_at: Mapped[datetime] = created()
 
 

@@ -95,6 +95,7 @@ class Runner:
         self.on_event = on_event or (lambda msg: log.info(msg))
         self.summary = RunSummary()
         self._stop = asyncio.Event()
+        self._mem_warned = False
 
     @property
     def ctx(self) -> PluginContext:
@@ -124,8 +125,28 @@ class Runner:
     def stop(self) -> None:
         self._stop.set()
 
+    async def _wait_for_memory(self) -> None:
+        """Don't start new work while the machine is short of RAM (Ollama, Chromium, Neo4j
+        and Docker share 32 GB). Running tasks finish; new ones wait for memory to recover."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        floor = self.app.settings.concurrency.min_free_ram_gb * 1024 ** 3
+        waited = 0
+        while psutil.virtual_memory().available < floor and not self._stop.is_set():
+            if waited == 0 and not self._mem_warned:
+                self._mem_warned = True
+                free = psutil.virtual_memory().available / 1024 ** 3
+                self.on_event(f"[yellow]low memory[/] ({free:.1f} GB free): pausing new tasks")
+            await asyncio.sleep(5)
+            waited += 5
+        if waited:
+            self._mem_warned = False
+
     async def _worker(self, types: list[str], name: str) -> None:
         while not self._stop.is_set():
+            await self._wait_for_memory()
             with self.Session() as s, s.begin():
                 task = queue.claim(s, self.inv_id, types, worker=f"{queue.WORKER_ID}/{name}")
                 if task is None:

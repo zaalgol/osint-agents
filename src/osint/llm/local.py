@@ -127,6 +127,8 @@ class LocalLLM:
         }
         if r.model not in self._think_unsupported:
             body["think"] = False
+        if r.keep_alive is not None:
+            body["keep_alive"] = r.keep_alive
         resp = await self._client.post(f"{base}/api/chat", json=body)
         if resp.status_code == 400 and "think" in resp.text.lower() and "think" in body:
             self._think_unsupported.add(r.model)  # older templates reject the flag

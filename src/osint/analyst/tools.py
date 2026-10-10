@@ -71,6 +71,7 @@ class AnalystTools:
     max_collection_requests: int = 30
     judge: Judge | None = None
     neo4j: Any = None                # Neo4jSettings; graph tools need it
+    auto_apply_downgrades: bool = True
     _requests: int = field(default=0, init=False)
     _driver: Any = field(default=None, init=False)
 
@@ -396,12 +397,17 @@ class AnalystTools:
         with self.session_factory() as s:
             inv = self._inv(s, investigation)
             out = []
+            from osint.analyst.revisions import history
+
             for f in s.scalars(select(Finding).where(Finding.investigation_id == inv.id)
                                .order_by(Finding.id)):
-                out.append({"marker": f"[F:{f.id}]", "kind": f.kind, "text": f.text,
-                            "confidence": f.confidence, "epistemic_status": f.epistemic_status,
-                            "created_by": f.created_by,
-                            "evidence": self._evidence_ids(s, "finding", f.id, 10)})
+                row = {"marker": f"[F:{f.id}]", "kind": f.kind, "text": f.text,
+                       "confidence": f.confidence, "epistemic_status": f.epistemic_status,
+                       "status": f.status, "created_by": f.created_by,
+                       "evidence": self._evidence_ids(s, "finding", f.id, 10)}
+                if revs := history(s, f.id, 3):
+                    row["revisions"] = revs
+                out.append(row)
             return out
 
     def shared_entities(self, investigation: int | str | None = None, limit: int = 50) -> list[dict]:
@@ -678,3 +684,17 @@ class AnalystTools:
                 raise ToolError(f"no cross link {link_id} involving this investigation")
             c.status, c.explanation, c.decided_by = "rejected", reason, self.actor
         return {"link_id": link_id, "status": "rejected"}
+
+    def propose_finding_revision(self, finding_id: int, new_confidence: float, reason: str,
+                                 evidence_ids: list[int] | None = None,
+                                 withdraw: bool = False) -> dict:
+        """Lower/raise a finding's confidence or withdraw it, with reason and evidence."""
+        from osint.analyst.revisions import RevisionError, propose_revision
+
+        try:
+            with self.session_factory() as s, s.begin():
+                return propose_revision(s, finding_id, new_confidence, reason, self.actor,
+                                        evidence_ids, withdraw, self.auto_apply_downgrades,
+                                        investigation_id=self.investigation_id)
+        except RevisionError as e:
+            raise ToolError(str(e)) from e

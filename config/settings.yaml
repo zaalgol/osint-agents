@@ -20,6 +20,8 @@ searxng:
 concurrency:
   llm_slots: 2                    # in-flight local LLM calls (match OLLAMA_NUM_PARALLEL)
   network_tasks: 16               # crawl/download tasks
+  browser_pages: 2                # concurrent Chromium screenshot pages (RAM heavy)
+  min_free_ram_gb: 3.0            # pause claiming new work when free RAM is below this
 
 evidence:
   hash_algorithms: [sha256, sha512]

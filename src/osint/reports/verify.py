@@ -191,7 +191,8 @@ class _Resolver:
     def finding(self, fid: int) -> Finding | None:
         if fid not in self._f:
             f = self.s.get(Finding, fid)
-            self._f[fid] = f if f is not None and f.investigation_id == self.inv else None
+            ok = f is not None and f.investigation_id == self.inv and f.status != "withdrawn"
+            self._f[fid] = f if ok else None   # withdrawn findings can't be cited
         return self._f[fid]
 
     def finding_quotes(self, fid: int) -> list[str]:

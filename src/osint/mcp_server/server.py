@@ -149,6 +149,17 @@ def build_server(tools: AnalystTools, toolset: str = "full") -> MCPServer:
         return tools.request_collection(plugin, params, reason, priority)
 
     @server.tool()
+    def propose_finding_revision(finding_id: int, new_confidence: float, reason: str,
+                                 evidence_ids: list[int] | None = None,
+                                 withdraw: bool = False) -> dict:
+        """Revise a finding when evidence changes it: lower or raise confidence, or withdraw
+        it (withdraw=true) if it turned out wrong. Give the reason and the evidence ids.
+        Downgrades apply immediately; upgrades and withdrawals go to a human for approval.
+        History is kept."""
+        return tools.propose_finding_revision(finding_id, new_confidence, reason, evidence_ids,
+                                              withdraw)
+
+    @server.tool()
     def confirm_cross_link(link_id: int, explanation: str, evidence_ids: list[int],
                            premises: list[dict] | None = None, confidence: float = 0.7) -> dict:
         """Confirm a candidate link between investigations. Needs evidence_ids (ideally
@@ -196,5 +207,6 @@ def main() -> None:
         raw_store=app.raw_store, investigation_id=inv, actor=f"claude:{job}",
         max_collection_requests=int(os.environ.get("OSINT_MAX_REQUESTS", "30")), judge=judge,
         neo4j=app.settings.neo4j,
+        auto_apply_downgrades=app.settings.analysis.auto_apply_downgrades,
     )
     build_server(tools, toolset).run("stdio")

@@ -246,7 +246,7 @@ const views = {
 views.Review = async function (root) {
   const d = await api(`/api/inv/${state.inv}/review`);
   const ACCEPT = { resolution_pair: "Merge", resolution_candidate: "Merge",
-    sanctions_match: "Confirm listing", contradiction: "Acknowledge" };
+    sanctions_match: "Confirm listing", contradiction: "Acknowledge", finding_revision: "Apply" };
   const status = h("div", { class: "small muted", style: "margin-bottom:8px" });
   async function act(path, body, row) {
     const note = row.querySelector("input") ? row.querySelector("input").value : "";
@@ -259,6 +259,7 @@ views.Review = async function (root) {
   for (const it of d.items) (groups[it.kind] = groups[it.kind] || []).push(it);
   const detail = (it) => {
     const p = it.payload || {};
+    if (p.finding_text) return `“${p.finding_text}”  ${p.old} → ${p.new}${p.withdraw ? " (withdraw)" : ""}`;
     if (p.names) return `${p.names[0]}  vs  ${p.names[1]}  (score ${p.score})`;
     if (p.list_entry) return p.list_entry;
     if (p.a_description) return `${p.a_description}  vs  ${p.b_description}`;
@@ -266,7 +267,7 @@ views.Review = async function (root) {
     if (p.host) return p.host;
     return "";
   };
-  const ORDER = ["integrity_alert", "sanctions_match", "resolution_pair", "resolution_candidate",
+  const ORDER = ["integrity_alert", "finding_revision", "sanctions_match", "resolution_pair", "resolution_candidate",
     "contradiction", "unresolved", "quote_not_found", "weak_citation", "ontology", "blocked_source"];
   const rank = (k) => (ORDER.indexOf(k) < 0 ? 99 : ORDER.indexOf(k));
   const cards = Object.entries(groups).sort((x, y) => rank(x[0]) - rank(y[0])).map(([kind, items]) => h("div", { class: "card", style: "margin-bottom:16px" },

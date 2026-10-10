@@ -115,6 +115,8 @@ uv run python -m osint resume redsea
 | `osint report <inv>` | Claude writes the report; the citation gate checks it (auto-audit on failure); renders MD + HTML |
 | `osint assess <inv>` | Claude threat assessment: capability, intent, opportunity, likelihood/impact, indicators & warnings |
 | `osint red-team <inv>` | Claude challenges the findings (ACH, alternative hypotheses, gaps); run it before a final report |
+| `osint revise <F> --confidence 0.3 --reason ...` / `--withdraw` | Revise or withdraw a finding (history kept). Claude's downgrades apply; its upgrades and withdrawals wait in Review |
+| `osint apply-red-team <job>` | Turn a red-team job's suggested confidences into revisions |
 | `osint report-verify <id>` | Re-run the citation gate and list every problem sentence |
 | `osint report-override <id> --reason` | Release a report that failed the gate (recorded on the report) |
 | `osint ask <inv> "<question>"` | Read-only Q&A over the knowledge base, with citations |
@@ -159,6 +161,14 @@ uv run python -m osint resume redsea
    couldn't: merges, sanctions confirmations, contradictions, link candidates. Rejected
    extractions can only be dismissed, never voted into facts.
 4. `osint daemon` re-verifies all evidence daily (`integrity_alert` on any problem).
+
+### Resource limits (32 GB machine)
+
+Workers stop claiming new tasks when free RAM drops below `concurrency.min_free_ram_gb`
+(running tasks finish), and Chromium screenshot pages are capped by
+`concurrency.browser_pages`. Ollama unloads the 27B model one minute after its last use
+(`keep_alive` per role in `models.yaml`); its runner process holds RAM even when the model
+is on the GPU.
 
 ### Claims vs facts
 

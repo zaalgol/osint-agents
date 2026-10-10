@@ -55,6 +55,10 @@ def decide(s: Session, app, review_id: int, decision: str, actor: str,
     if decision == "reject":
         if kind == "contradiction":
             _clear_contradiction(s, p["a"], p["b"])
+        if kind == "finding_revision":
+            from osint.analyst.revisions import reject_revision
+
+            reject_revision(s, int(p["revision_id"]), actor)
         _stamp(item, "rejected", actor, note)
         return {"review": review_id, "status": "rejected"}
 
@@ -82,6 +86,13 @@ def decide(s: Session, app, review_id: int, decision: str, actor: str,
         rel_id = _accept_sanctions(s, app, item, actor)
         _stamp(item, "accepted", actor, note, relation_id=rel_id)
         return {"review": review_id, "status": "accepted", "relation_id": rel_id}
+
+    if kind == "finding_revision":
+        from osint.analyst.revisions import apply_revision
+
+        apply_revision(s, int(p["revision_id"]), actor)
+        _stamp(item, "accepted", actor, note)
+        return {"review": review_id, "status": "accepted", "applied_revision": p["revision_id"]}
 
     if kind == "contradiction":
         _stamp(item, "accepted", actor, note)   # acknowledged: both versions stay visible

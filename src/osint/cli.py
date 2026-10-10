@@ -780,7 +780,16 @@ def red_team_cmd(
         console.print(f"  alternative hypotheses: {' '.join(d['alternative_hypotheses'])}")
     if d.get("gaps"):
         console.print(f"  gaps: {' '.join(d['gaps'])}")
+    for r in out.extra.get("revisions", []):
+        console.print(f"  revision: {r}")
     _job_footer(out.result)
+
+
+@app.command("apply-red-team")
+def apply_red_team_cmd(job_id: int) -> None:
+    """Apply a past red-team job's suggested confidences (downgrades apply, rest to review)."""
+    for r in _analyst().apply_red_team(job_id):
+        console.print(r)
 
 
 @app.command()
@@ -895,10 +904,41 @@ def findings(investigation: str) -> None:
     if not rows:
         console.print("no findings yet (run: osint analyze)")
     for f in rows:
+        gone = " [red]WITHDRAWN[/]" if f.get("status") == "withdrawn" else ""
         console.print(f"{f['marker']} [bold]{f['kind']}[/] ({f['epistemic_status']}, "
-                      f"{f['confidence']:.2f}) {f['text']}")
+                      f"{f['confidence']:.2f}){gone} {f['text']}")
+        for r in f.get("revisions", [])[:2]:
+            console.print(f"      [dim]revision {r['from']:.2f} -> {r['to']:.2f} ({r['status']}, "
+                          f"{r['by']}): {r['reason'][:120]}[/]")
         if f["evidence"]:
             console.print(f"      evidence: {' '.join(f['evidence'])}")
+
+
+@app.command()
+def revise(
+    finding_id: int,
+    reason: Annotated[str, typer.Option(help="What evidence changes it.")],
+    confidence: Annotated[float | None, typer.Option(help="New confidence 0-1.")] = None,
+    withdraw: Annotated[bool, typer.Option(help="Withdraw the finding (shown wrong).")] = False,
+    evidence: Annotated[str, typer.Option(help="Comma list of evidence ids.")] = "",
+    by: str = "human:cli",
+) -> None:
+    """Revise a finding's confidence or withdraw it (history kept; applied immediately)."""
+    from osint.analyst.revisions import RevisionError, propose_revision
+    from osint.storage.db import Finding
+
+    a = App()
+    try:
+        with a.session_factory() as s, s.begin():
+            f = s.get(Finding, finding_id)
+            if f is None:
+                raise RevisionError(f"no finding {finding_id}")
+            new = 0.0 if withdraw else (confidence if confidence is not None else f.confidence)
+            ev = [int(x) for x in evidence.split(",") if x.strip()]
+            console.print(propose_revision(s, finding_id, new, reason, by, ev, withdraw))
+    except RevisionError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
 
 
 @app.command()

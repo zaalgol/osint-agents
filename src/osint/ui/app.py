@@ -65,6 +65,7 @@ def create_app(app: App | None = None) -> Starlette:
             items = [{"id": r.id, "kind": r.kind, "reason": r.reason,
                       "payload": {k: v for k, v in (r.payload or {}).items()
                                   if k in ("names", "score", "list_entry", "a_description",
+                                           "finding_text", "old", "new", "withdraw",
                                            "b_description", "host", "quote", "name", "type",
                                            "candidates", "entity_id", "a", "b")}}
                      for r in s.scalars(select(ReviewItem).where(

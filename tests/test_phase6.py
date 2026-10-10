@@ -274,3 +274,80 @@ def test_red_team_job_and_report_gating(app6):
                         input_hash="h" * 64, status="done",
                         finished_at=datetime.now(UTC) + timedelta(minutes=1)))
     assert a.red_team_current(inv) is False
+
+
+@pytest.mark.integration
+def test_finding_revision_policy_and_withdrawn_findings_fail_gate(app6):
+    from osint.analyst.revisions import RevisionError, propose_revision
+    from osint.reports.verify import verify_report
+    from osint.review.actions import decide
+    from osint.storage.db import EvidenceLink, Finding, FindingRevision, ReviewItem
+
+    inv, did = _doc(app6, "The Grey Front attacked the port on 1 May 2026, police said.")
+    with app6.session_factory() as s, s.begin():
+        from osint.storage.db import Document
+
+        d = s.get(Document, did)
+        f = Finding(investigation_id=inv, kind="assessment", text="Grey Front attacks ports",
+                    confidence=0.7, epistemic_status="reported", created_by="t")
+        s.add(f)
+        s.flush()
+        s.add(EvidenceLink(target_type="finding", target_id=f.id, artifact_id=d.artifact_id,
+                           document_id=did, quote_original="The Grey Front attacked the port",
+                           quote_verified=True, created_by="t"))
+        fid = f.id
+    with app6.session_factory() as s, s.begin():
+        # analyst downgrade: applied at once
+        r = propose_revision(s, fid, 0.4, "only one police source so far", "claude:red_team")
+        assert r["status"] == "applied"
+        # analyst upgrade: waits for a human
+        up = propose_revision(s, fid, 0.9, "two more outlets confirm it", "claude:analyze")
+        assert up["status"] == "proposed"
+        # analyst withdrawal: waits for a human
+        wd = propose_revision(s, fid, 0.0, "the report was retracted by the outlet",
+                              "claude:red_team", withdraw=True)
+        with pytest.raises(RevisionError, match="reason"):
+            propose_revision(s, fid, 0.3, "meh", "claude:x")
+    with app6.session_factory() as s:
+        assert s.get(Finding, fid).confidence == 0.4
+    with app6.session_factory() as s, s.begin():
+        decide(s, app6, up["review_item"], "reject", "human:test")
+        decide(s, app6, wd["review_item"], "accept", "human:test", note="outlet retracted")
+    with app6.session_factory() as s:
+        f = s.get(Finding, fid)
+        assert f.status == "withdrawn" and f.confidence == 0.0
+        statuses = sorted(r.status for r in s.scalars(select(FindingRevision).where(
+            FindingRevision.finding_id == fid)))
+        assert statuses == ["applied", "applied", "rejected"]
+        assert s.scalar(select(ReviewItem.status).where(ReviewItem.id == wd["review_item"])) == "accepted"
+    v = asyncio.run(verify_report(app6.session_factory, app6.raw_store, inv,
+                                  f"The Grey Front attacked the port in May 2026 [F:{fid}]."))
+    assert not v.ok and v.unresolved == 1
+
+
+def test_memory_guard_pauses_until_ram_recovers(monkeypatch):
+    import sys
+    import types
+
+    from osint.orchestrator.runner import Runner
+
+    readings = iter([1, 1, 8])            # GB free: low, low, recovered
+
+    def virtual_memory():
+        return types.SimpleNamespace(available=next(readings) * 1024 ** 3)
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(virtual_memory=virtual_memory))
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    r = Runner.__new__(Runner)          # only the guard is under test
+    r.app = types.SimpleNamespace(settings=types.SimpleNamespace(
+        concurrency=types.SimpleNamespace(min_free_ram_gb=3.0)))
+    r._stop = asyncio.Event()
+    r._mem_warned = False
+    events: list[str] = []
+    r.on_event = events.append
+    asyncio.run(r._wait_for_memory())
+    assert next(readings, None) is None   # all three readings consumed
+    assert len([e for e in events if "low memory" in e]) == 1

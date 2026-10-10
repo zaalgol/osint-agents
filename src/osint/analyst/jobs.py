@@ -107,7 +107,43 @@ class Analyst:
         res = self.runner.run("red_team", inv.id, prompt, self.system,
                               fingerprint=fingerprint(self.app, inv.id), max_requests=max_requests,
                               max_turns=self._turns("red_team", 40), fresh=fresh)
-        return JobOutcome(res, {})
+        applied = self.apply_red_team(res.job_id)
+        return JobOutcome(res, {"revisions": applied})
+
+    def apply_red_team(self, job_id: int) -> list[dict]:
+        """Turn a red-team job's suggested confidences into revisions (same policy as the
+        tool: downgrades apply, anything else goes to review). Skips findings that already
+        have a revision from this job."""
+        import re
+
+        from osint.analyst.revisions import RevisionError, propose_revision
+        from osint.storage.db import ClaudeJob, FindingRevision
+
+        out = []
+        with self.app.session_factory() as s:
+            job = s.get(ClaudeJob, job_id)
+            data = (job.result_json if job else None) or {}
+            inv_id = job.investigation_id if job else None
+        actor = f"claude:red_team#{job_id}"
+        for c in data.get("challenged", []):
+            m = re.search(r"F:(\d+)", str(c.get("finding", "")))
+            conf = c.get("suggested_confidence")
+            if not m or not isinstance(conf, int | float):
+                continue
+            fid = int(m.group(1))
+            try:
+                with self.app.session_factory() as s, s.begin():
+                    if s.scalar(select(FindingRevision.id).where(
+                            FindingRevision.finding_id == fid,
+                            FindingRevision.proposed_by == actor)):
+                        continue
+                    out.append(propose_revision(
+                        s, fid, float(conf), f"red team: {c.get('issue', '')}", actor,
+                        auto_apply_downgrades=self.app.settings.analysis.auto_apply_downgrades,
+                        investigation_id=inv_id))
+            except RevisionError as e:
+                out.append({"finding": f"[F:{fid}]", "skipped": str(e)})
+        return out
 
     def threat_assessment(self, inv_id: int, fresh: bool = False) -> JobOutcome:
         inv = self._inv(inv_id)
