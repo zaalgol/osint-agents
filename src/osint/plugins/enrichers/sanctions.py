@@ -1,4 +1,5 @@
-"""Sanctions/terror-designation screening: UN Security Council Consolidated List + US OFAC SDN.
+"""Sanctions/terror-designation screening: UN Security Council Consolidated List, US OFAC
+SDN, the EU consolidated financial sanctions list and the UK Sanctions List (FCDO).
 
 The lists are public (no key) and captured with proof at most once per day, then reused.
 Matching uses transliterated, normalized names plus aliases (exact key, or fuzzy
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
@@ -30,13 +32,20 @@ from osint.enrichment.base import EnrichmentResult, EntityView
 from osint.evidence.capture import capture_url
 from osint.resolution.er import ascii_key
 
+OFAC = "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports"
 LISTS = {
     "un": ("https://scsanctions.un.org/resources/xml/en/consolidated.xml",
            "UN Security Council"),
-    "ofac_sdn": ("https://www.treasury.gov/ofac/downloads/sdn.csv", "US Treasury OFAC"),
-    "ofac_alt": ("https://www.treasury.gov/ofac/downloads/alt.csv", None),
+    "ofac_sdn": (f"{OFAC}/SDN.CSV", "US Treasury OFAC"),
+    "ofac_alt": (f"{OFAC}/ALT.CSV", None),
+    # the token is the public one the Commission publishes for this file
+    "eu": (("https://webgate.ec.europa.eu/fsd/fsf/public/files/xmlFullSanctionsList_1_1/content"
+           "?token=dG9rZW4tMjAxNw"), "Council of the European Union"),
+    "uk": ("https://sanctionslist.fcdo.gov.uk/docs/UK-Sanctions-List.csv", "UK Government (FCDO)"),
 }
+SCREENED = ("un", "ofac", "eu", "uk")
 MAX_AGE = timedelta(hours=24)
+log = logging.getLogger(__name__)
 FUZZY = 92
 
 
@@ -94,6 +103,74 @@ def parse_ofac(sdn_csv: bytes, alt_csv: bytes | None) -> list[ListEntry]:
     return out
 
 
+def parse_eu(xml_bytes: bytes) -> list[ListEntry]:
+    """EU Financial Sanctions Files export (namespaced XML, one sanctionEntity per party)."""
+    root = ET.fromstring(xml_bytes)
+    ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
+    out = []
+    for el in root.iter(f"{ns}sanctionEntity"):
+        st = el.find(f"{ns}subjectType")
+        code = st.get("code") if st is not None else ""
+        if code not in ("person", "enterprise"):
+            continue
+        ranked = []                       # English first, then other Latin-script names
+        for a in el.findall(f"{ns}nameAlias"):
+            n = (a.get("wholeName") or "").strip()
+            if n:
+                english = (a.get("nameLanguage") or a.get("regulationLanguage") or "").lower() == "en"
+                ranked.append((0 if english else 1 if n.isascii() else 2, n))
+        names = []
+        for _, n in sorted(ranked, key=lambda x: x[0]):
+            if n not in names:
+                names.append(n)
+        if not names:
+            continue
+        ref = el.get("euReferenceNumber") or el.get("logicalId") or ""
+        reg = el.find(f"{ns}regulation")
+        programme = reg.get("programme", "") if reg is not None else ""
+        since = reg.get("entryIntoForceDate", "") if reg is not None else ""
+        line = (f"EU consolidated financial sanctions list {ref} [{programme}]: {names[0]}"
+                + (f"; aliases: {'; '.join(names[1:13])}" if len(names) > 1 else "")
+                + (f"; in force since {since}" if since else ""))
+        out.append(ListEntry("eu", "Council of the European Union", ref,
+                             "individual" if code == "person" else "entity", names, line))
+    return out
+
+
+def parse_uk(csv_bytes: bytes) -> list[ListEntry]:
+    """UK Sanctions List CSV: a report-date line, a header, then one row per name variant."""
+    lines = csv_bytes.decode("utf-8-sig", "replace").splitlines()
+    start = next((i for i, ln in enumerate(lines[:5]) if "Unique ID" in ln), None)
+    if start is None:
+        return []
+    groups: dict[str, dict] = {}
+    for r in csv.DictReader(io.StringIO("\n".join(lines[start:]))):
+        uid = (r.get("Unique ID") or "").strip()
+        typ = (r.get("Designation Type") or "").strip().lower()
+        if not uid or typ not in ("individual", "entity"):
+            continue                      # ships are screened elsewhere (by IMO number)
+        name = " ".join(p.strip() for p in (r.get(f"Name {i}") or "" for i in (1, 2, 3, 4, 5, 6))
+                        if p.strip())
+        g = groups.setdefault(uid, {"kind": typ, "primary": [], "names": [],
+                                    "regime": (r.get("Regime Name") or "").strip(),
+                                    "since": (r.get("Date Designated") or "").strip()})
+        if name and name not in g["names"]:
+            g["names"].append(name)
+            if (r.get("Name type") or "").strip().lower() == "primary name":
+                g["primary"].append(name)
+    out = []
+    for uid, g in groups.items():
+        if not g["names"]:
+            continue
+        names = g["primary"][:1] + [n for n in g["names"] if n not in g["primary"][:1]]
+        line = (f"UK Sanctions List {uid} [{g['regime']}]: {names[0]}"
+                + (f"; aliases: {'; '.join(names[1:13])}" if len(names) > 1 else "")
+                + (f"; designated {g['since']}" if g["since"] else ""))
+        out.append(ListEntry("uk", "UK Government (FCDO)", uid, g["kind"], names, line))
+    return out
+
+
+APOSTROPHES = dict.fromkeys(map(ord, [chr(39), chr(0x2019), chr(0x2018), chr(96), chr(0x02BC)]))
 ARTICLES = {"the", "al", "el", "ul"}   # "THE HOUTHIS" = "Houthis"; "AL-HUTHI" = "Huthi"
 
 
@@ -102,7 +179,8 @@ def _keys(names: list[str]) -> set[str]:
     for n in names:
         # OFAC writes "LAST, First": index both orders
         for variant in (n, " ".join(reversed([p.strip() for p in n.split(",", 1)]))):
-            k = ascii_key(variant)
+            # "KATA'IB" = "Kataib": drop apostrophes (ASCII, typographic, backtick)
+            k = ascii_key(variant.translate(APOSTROPHES))
             bare = " ".join(t for t in k.split() if t not in ARTICLES)
             for key in (k, bare):
                 if len(key) >= 4:
@@ -110,10 +188,30 @@ def _keys(names: list[str]) -> set[str]:
     return out
 
 
+def _parties(owner_ids, matched: set[str]) -> int:
+    """How many distinct parties own a matched name. Entries are the same party when they
+    share another name, or when the matched name is the primary name on both lists
+    ("HIZBALLAH" on OFAC and the UK list). A name that is only an alias on each needs
+    corroboration: "Ansar Allah" is an alias of both the Houthis and Hizballah."""
+    by_id = SanctionsEnricher._cache.get("by_id", {})
+
+    def primary(e: ListEntry) -> set[str]:
+        return _keys(e.names[:1]) & matched
+
+    def same(a: ListEntry, b: ListEntry) -> bool:
+        return bool((a.keys & b.keys) - matched) or bool(primary(a) & primary(b))
+
+    groups: list[list[ListEntry]] = []
+    for e in (by_id[i] for i in owner_ids if i in by_id):
+        joined = [g for g in groups if any(same(e, o) for o in g)]
+        groups = [g for g in groups if g not in joined] + [[e, *(o for g in joined for o in g)]]
+    return len(groups)
+
+
 class SanctionsEnricher(Enricher):
     name = "sanctions"
     version = "0.1.0"
-    description = "Screen people/organizations against UN and OFAC sanctions lists."
+    description = "Screen people/organizations against UN, OFAC, EU and UK sanctions lists."
     entity_types: ClassVar[set[str]] = {"person", "organization", "armed_group"}
     _cache: ClassVar[dict] = {}          # per process: (date) -> (entries, captures)
 
@@ -147,12 +245,19 @@ class SanctionsEnricher(Enricher):
             entries += parse_un(raw["un"])
         if raw.get("ofac_sdn"):
             entries += parse_ofac(raw["ofac_sdn"], raw.get("ofac_alt"))
+        for key, parse in (("eu", parse_eu), ("uk", parse_uk)):
+            if raw.get(key):
+                try:
+                    entries += parse(raw[key])
+                except (ET.ParseError, csv.Error, ValueError) as e:   # one bad list != no screening
+                    log.warning("sanctions list %s unparseable: %s", key, e)
         owners: dict[str, set[str]] = {}
         for e in entries:
             e.keys = _keys(e.names)
             for k in e.keys:
                 owners.setdefault(k, set()).add(f"{e.source}:{e.ref}")
-        SanctionsEnricher._cache = {"date": today, "entries": entries, "owners": owners}
+        SanctionsEnricher._cache = {"date": today, "entries": entries, "owners": owners,
+                                    "by_id": {f"{e.source}:{e.ref}": e for e in entries}}
         return entries, new_captures
 
     async def enrich(self, entity: EntityView, ctx: PluginContext) -> EnrichmentResult:
@@ -173,7 +278,7 @@ class SanctionsEnricher(Enricher):
             if best >= FUZZY:
                 hits.append((e, best / 100, set()))
         if not hits:
-            res.attributes = {"screened": [k for k in ("un", "ofac")], "matches": 0}
+            res.attributes = {"screened": list(SCREENED), "matches": 0}
             return res
         hits.sort(key=lambda h: -h[1])
         hits = hits[:5]
@@ -199,10 +304,19 @@ class SanctionsEnricher(Enricher):
             # Only an unambiguous, specific name becomes a fact. Ambiguous means the
             # matched name is shared by several listed parties (e.g. "Ansar Allah" is
             # also an alias of Hizballah); generic means a single word ("Vanguard").
-            ambiguous = any(len(owners.get(k, ())) > 1 for k in keys) or (not keys and sc < 1.0)
+            # Entries on several lists are the same party when they also share another name
+            # (the Houthis on the OFAC, EU and UK lists); otherwise they are different parties.
+            ambiguous = any(_parties(owners.get(k, ()), keys) > 1
+                            for k in keys) or (not keys and sc < 1.0)
             generic = len(entity.name.split()) < 2 and not entity.aliases[1:]
-            if ambiguous or generic:
-                why = "name shared by several listed parties" if ambiguous else "generic name"
+            # Matching only one of the entry's aliases is weak ("ISLAMIC JIHAD" is an alias
+            # of Hizballah and the name of other groups): it needs the primary name or a
+            # second matching name.
+            own = {n for n in [entity.name, *entity.aliases] if _keys([n]) & e.keys}
+            alias_only = bool(keys) and not (_keys(e.names[:1]) & keys) and len(own) < 2
+            if ambiguous or generic or alias_only:
+                why = ("name shared by several listed parties" if ambiguous else
+                       "generic name" if generic else "matched only an alias")
                 res.reviews.append({
                     "kind": "sanctions_match",
                     "reason": f"possible {e.authority} listing ({e.ref}); {why}: confirm "

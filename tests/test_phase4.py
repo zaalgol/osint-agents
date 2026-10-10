@@ -333,7 +333,8 @@ def test_sanctions_org_becomes_relation_but_person_only_review(app4):
     files = {"consolidated.xml": UN_XML, "sdn.csv": SDN, "alt.csv": ALT}
 
     def handler(r):
-        return resp(200, files[str(r.url).rsplit("/", 1)[-1]], "text/plain")
+        body = files.get(str(r.url).rsplit("/", 1)[-1].lower())
+        return resp(200, body, "text/plain") if body is not None else resp(404, "not found")
 
     inv, org = _entity(app4, "armed_group", "Northern Test Front")
     _res, out = _enrich(app4, inv, org, SanctionsEnricher(), handler)
@@ -473,7 +474,8 @@ def test_sanctions_ambiguous_alias_and_generic_names_go_to_review(app4):
     files = {"consolidated.xml": un, "sdn.csv": sdn, "alt.csv": alt}
 
     def handler(r):
-        return resp(200, files[str(r.url).rsplit("/", 1)[-1]], "text/plain")
+        body = files.get(str(r.url).rsplit("/", 1)[-1].lower())
+        return resp(200, body, "text/plain") if body is not None else resp(404, "not found")
 
     # matched via an alias that two listed parties share -> review, no relation
     inv, amb = _entity(app4, "armed_group", f"Partisans {tag}")
@@ -660,3 +662,54 @@ def test_unreachable_site_falls_back_to_browser(pg_settings):
 
     item = asyncio.run(go())
     assert item.meta.extra["route"] == "browser" and "ReadTimeout" in item.meta.extra["route_attempts"][0]["error"]
+
+
+EU_XML = """<?xml version="1.0"?><export xmlns="http://eu.europa.ec/fpi/fsd/export">
+<sanctionEntity euReferenceNumber="EU.1.1" logicalId="1">
+ <regulation programme="YEM" entryIntoForceDate="2022-03-01"/><subjectType code="enterprise"/>
+ <nameAlias wholeName="ПАРТИЗАНИ" nameLanguage="BG"/>
+ <nameAlias wholeName="THE RIVER LEGION" nameLanguage="EN"/>
+ <nameAlias wholeName="RIVERLEGION" nameLanguage="EN"/></sanctionEntity>
+<sanctionEntity euReferenceNumber="EU.2.2" logicalId="2"><subjectType code="person"/>
+ <nameAlias wholeName="Abu Testman"/></sanctionEntity></export>"""
+UK_CSV = """Report Date: 08-Oct-2026
+Unique ID,Name 6,Name 1,Name 2,Name 3,Name 4,Name 5,Name type,Regime Name,Designation Type,Date Designated
+YEM9,The River Legion,,,,,,Primary Name,Yemen,Entity,01/03/2022
+YEM9,RIVERLEGION,,,,,,Alias,Yemen,Entity,01/03/2022
+YEM9,RIVERLEGION,,,,,,Alias,Yemen,Entity,01/03/2022
+SHP1,Some Ship,,,,,,Primary Name,Yemen,Ship,01/03/2022
+"""
+
+
+def test_eu_and_uk_list_parsing():
+    from osint.plugins.enrichers.sanctions import parse_eu, parse_uk
+
+    eu = parse_eu(EU_XML.encode())
+    assert [e.kind for e in eu] == ["entity", "individual"]
+    assert eu[0].names[0] == "THE RIVER LEGION"            # English name leads the citation
+    assert "EU.1.1 [YEM]" in eu[0].line and "2022-03-01" in eu[0].line
+    uk = parse_uk(UK_CSV.encode())
+    assert len(uk) == 1 and uk[0].names == ["The River Legion", "RIVERLEGION"]   # ships skipped
+    assert uk[0].line.startswith("UK Sanctions List YEM9 [Yemen]: The River Legion")
+
+
+def test_same_party_on_several_lists_is_not_ambiguous_but_name_collision_is():
+    from osint.plugins.enrichers.sanctions import ListEntry, SanctionsEnricher, _keys, _parties
+
+    def entry(src, ref, *names):
+        e = ListEntry(src, src, ref, "entity", list(names), "")
+        e.keys = _keys(e.names)
+        return e
+
+    es = [entry("eu", "1", "The River Legion", "Riverlegion"),
+          entry("uk", "9", "The River Legion", "RIVERLEGION"),
+          entry("ofac", "5", "OTHER PARTY", "RIVER LEGION")]          # shares only the name
+    SanctionsEnricher._cache = {"by_id": {f"{e.source}:{e.ref}": e for e in es}}
+    ids = [f"{e.source}:{e.ref}" for e in es]
+    assert _parties(ids[:2], {"river legion"}) == 1
+    assert _parties(ids, {"river legion"}) == 2
+    # primary name on both lists, no other shared name (UK adds "Hezbollah"): same party
+    es = [entry("ofac", "7", "HIZBALLAH", "PARTY OF GOD"), entry("uk", "C3", "Hizballah", "Hezbollah")]
+    SanctionsEnricher._cache = {"by_id": {f"{e.source}:{e.ref}": e for e in es}}
+    assert _parties(["ofac:7", "uk:C3"], {"hizballah"}) == 1
+    SanctionsEnricher._cache = {}
