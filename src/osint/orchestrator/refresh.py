@@ -85,8 +85,12 @@ def set_schedule(app: App, investigation_id: int, every_minutes: int, time_range
 
 def due_schedules(app: App) -> list[Schedule]:
     with app.session_factory() as s:
-        rows = s.scalars(select(Schedule).where(Schedule.enabled.is_(True),
-                                                Schedule.next_run_at <= datetime.now(UTC))).all()
+        from osint.storage.db import Investigation
+
+        rows = s.scalars(select(Schedule).join(
+            Investigation, Investigation.id == Schedule.investigation_id).where(
+            Schedule.enabled.is_(True), Schedule.next_run_at <= datetime.now(UTC),
+            Investigation.status != "archived")).all()
         for r in rows:
             s.expunge(r)
         return list(rows)

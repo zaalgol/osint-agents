@@ -107,6 +107,65 @@ uv run python -m osint review redsea            # what was rejected and why
 uv run python -m osint resume redsea
 ```
 
+## Web GUI
+
+```powershell
+uv run python -m osint ui            # opens http://127.0.0.1:8765
+```
+
+A React app for everything the CLI does:
+
+- **Investigations:**
+  - create one (focus, queries, URLs, feeds; Claude planning; anonymous/Tor)
+  - archive one
+  - see knowledge counts, the task queue and failed tasks
+- **Collect:**
+  - every collector gets a form generated from its parameter schema, so plugins added
+    later get a UI with no extra code
+  - upload your own files as evidence (hashed, custody-logged, OCR/EXIF for images and
+    scanned PDFs)
+- **Graph:**
+  - entities and relations, coloured by type, with type filters and search
+  - optional "mentions" and event co-participation links
+  - click a node to open the entity
+- **Entities, Timeline, Evidence:**
+  - every citation shows the verbatim quote, translation, its Admiralty code, and a
+    machine-read warning for OCR/transcripts
+  - captured pages are served inert (no scripts)
+  - screenshots and WARCs open from the evidence table
+- **Findings:** proof trees down to the preserved quotes, contradictions, and revisions.
+- **Connections:** cross-investigation links, shared entities, key players and communities.
+- **Ask Claude**, **Reports and export:**
+  - Q&A, reports (rendered sandboxed), evidence bundles (optional face blurring)
+  - STIX/FtM/GEXF export with download links
+- **Review:** decide sanctions matches, merges, contradictions and revisions; bulk-dismiss
+  dismiss-only items.
+- **Sources and grading:** set Admiralty reliability A-F per source.
+- **Jobs:** long operations run as background `osint` processes with a live log.
+  - "Cancel" pauses a run like Ctrl+C: in-flight tasks go back to the queue.
+  - Only one queue-processing job runs per investigation at a time.
+- **System:** health checks (same as `osint doctor`), Tor start/stop, verify/seal/snapshot,
+  run due schedules, plugin list.
+
+**Security:**
+- the server binds to 127.0.0.1 only
+- every write needs a per-server CSRF token and a localhost Origin
+- jobs are a fixed whitelist of `osint` commands, run without a shell
+- a strict Content-Security-Policy applies
+
+**Developing the GUI** (`web/`, Vite + React + TypeScript): the built files are committed
+in `src/osint/ui/static/`, so Node.js is only needed to change the GUI:
+
+```powershell
+$env:Path = "$env:LOCALAPPDATA/osint-node/node-v24.21.0-win-x64;$env:Path"   # portable Node LTS
+cd web; npm install; npm run dev      # http://localhost:5173, API proxied to `osint ui --no-open`
+npm run build                         # type-check + build into src/osint/ui/static
+```
+
+Node.js 24 LTS was installed portably (checksum and release-key signature verified) in
+`%LOCALAPPDATA%\osint-node`. npm dependencies are pinned to exact versions that were at
+least two weeks old at install time.
+
 ## CLI
 
 | Command | What it does |
@@ -143,7 +202,8 @@ uv run python -m osint resume redsea
 | `osint collect <inv> <plugin> '<json>'` | Queue any collector, e.g. `telegram_public '{"channels": ["somechannel"]}'` |
 | `osint enrich <inv> [--enrichers rdap,geocode,btc,sanctions]` | Enrich entities with outside sources (proof captured, quotes verified) |
 | `osint export <inv> --format stix,ftm,gexf` | STIX 2.1 / FollowTheMoney / Gephi |
-| `osint ui` | Local web UI on http://127.0.0.1:8765 (read-only) |
+| `osint ui` | Web GUI on http://127.0.0.1:8765: everything below, point and click (see **Web GUI**) |
+| `osint archive <inv> [--undo]` | Hide an investigation and stop its schedule (nothing is deleted) |
 | `osint retract <rel> --reason` / `osint unretract <rel>` | Retract a wrong relation (kept on record, hidden from analysis/exports) |
 | `osint retract-citation <E> --reason` | Retract one wrong citation; reports citing it fail the gate |
 | `osint cleanup` | Retract LLM-made relations of enrichment-only types |

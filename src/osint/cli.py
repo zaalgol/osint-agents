@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import mimetypes
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated
 
-import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -97,104 +94,9 @@ def init(
 @app.command()
 def doctor() -> None:
     """Check every dependency the system needs and report what's missing."""
-    settings, models = get_settings(), get_models_config()
-    results: list[tuple[str, bool, str]] = []
+    from osint.core.doctor import run_checks
 
-    def check(name: str, fn) -> None:
-        try:
-            results.append((name, True, fn() or "ok"))
-        except Exception as e:  # noqa: BLE001 - doctor reports every failure, never crashes
-            results.append((name, False, f"{type(e).__name__}: {e}"[:160]))
-
-    def pg() -> str:
-        from osint.storage.session import make_engine
-
-        with make_engine(settings).connect() as c:
-            ver = c.scalar(text("SHOW server_version"))
-            vec = c.scalar(text("SELECT extversion FROM pg_extension WHERE extname='vector'"))
-            head = c.scalar(text("SELECT version_num FROM alembic_version"))
-        if not vec:
-            raise RuntimeError("pgvector extension missing (run osint init)")
-        return f"postgres {ver}, pgvector {vec}, schema {head}"
-
-    def neo() -> str:
-        from osint.storage.graph import make_driver
-
-        with make_driver(settings) as d:
-            d.verify_connectivity()
-            info = d.get_server_info()
-        return f"{info.agent}"
-
-    def searx() -> str:
-        r = httpx.get(f"{settings.searxng.url}/search",
-                      params={"q": "test", "format": "json"}, timeout=20)
-        r.raise_for_status()
-        return f"json api ok ({len(r.json().get('results', []))} results)"
-
-    def ollama() -> str:
-        base = models.local.base_url.removesuffix("/v1")
-        tags = httpx.get(f"{base}/api/tags", timeout=10).json()
-        have = {m["name"] for m in tags.get("models", [])}
-        have |= {n.removesuffix(":latest") for n in have}
-        want = {role: r.model for role, r in models.local.roles.items()}
-        missing = [f"{role}={m}" for role, m in want.items() if m not in have]
-        if missing:
-            raise RuntimeError("missing models: " + ", ".join(missing))
-        return ", ".join(f"{k}={v}" for k, v in want.items())
-
-    def claude() -> str:
-        exe = shutil.which(models.claude.binary)
-        if not exe:
-            raise RuntimeError(f"{models.claude.binary!r} not on PATH")
-        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30,
-                             check=False)
-        return out.stdout.strip() or out.stderr.strip()
-
-    def gpu() -> str:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=15, check=True,
-        )
-        return out.stdout.strip()
-
-    def plugins() -> str:
-        reg = App(settings).registry
-        return f"{len(reg.list())} plugins"
-
-    def vpn() -> str:
-        if not settings.network.vpn_proxy:
-            return "off (no network.vpn_proxy; blocked sites stay blocked)"
-        r = httpx.get("https://www.cloudflare.com/cdn-cgi/trace", proxy=settings.network.vpn_proxy,
-                      timeout=20)
-        info = dict(line.split("=", 1) for line in r.text.splitlines() if "=" in line)
-        return f"{settings.network.vpn_proxy}: exit {info.get('loc', '?')}, warp={info.get('warp', '?')}"
-
-    def tor() -> str:
-        from osint.net import tor as torlib
-
-        st = torlib.status(settings)
-        if not st.running:
-            return "not running (only anonymous investigations need it: osint tor start)"
-        if not st.is_tor:
-            raise RuntimeError(f"running but traffic does NOT exit via Tor: {st.detail}")
-        return f"running, exits via Tor ({st.exit_ip})"
-
-    def searx_tor() -> str:
-        try:
-            httpx.get(f"{settings.searxng.tor_url}/healthz", timeout=10).raise_for_status()
-        except httpx.HTTPError:
-            return "down (only anonymous investigations need it: docker compose up -d searxng-tor)"
-        return f"up at {settings.searxng.tor_url}"
-
-    def blocklists() -> str:
-        bl = App(settings).raw_store.blocklist
-        return f"{len(bl)} blocked hash(es) in {bl.dir}"
-
-    for name, fn in [("postgres", pg), ("neo4j", neo), ("searxng", searx), ("ollama", ollama),
-                     ("claude cli", claude), ("gpu", gpu), ("plugins", plugins), ("vpn", vpn),
-                     ("tor", tor), ("searxng-tor", searx_tor), ("blocklists", blocklists)]:
-        check(name, fn)
-
+    results = run_checks()
     t = Table(show_header=True, header_style="bold")
     t.add_column("component")
     t.add_column("status")
@@ -412,44 +314,17 @@ def new(
         "--anonymous", help="All collection through Tor; never a direct connection.")] = False,
 ) -> None:
     """Create an investigation and queue its initial collection tasks."""
-    from osint.core.models import TaskSpec
-    from osint.orchestrator import queue
-    from osint.storage.db import Investigation
+    from osint.orchestrator.investigations import InvestigationError, create_investigation
 
-    if not (query or url or feed or plan_first):
-        console.print("[red]give at least one --query, --url or --feed, or --plan[/]")
-        raise typer.Exit(1)
-    if plan_first and not focus:
-        console.print("[red]--plan needs --focus (what Claude should plan for)[/]")
-        raise typer.Exit(1)
-    a = App()
-    with a.session_factory() as s, s.begin():
-        if s.scalar(select(Investigation.id).where(Investigation.name == name)):
-            console.print(f"[red]investigation {name!r} already exists[/]")
-            raise typer.Exit(1)
-        inv = Investigation(name=name, seed={"focus": focus, "queries": query or [],
-                                             "urls": url or [], "feeds": feed or [],
-                                             "lang": lang, "time_range": time_range},
-                            config={"max_fetches": max_fetches,
-                                    "network_profile": "anonymous" if anonymous else "standard"})
-        s.add(inv)
-        s.flush()
-        specs = []
-        if query:
-            specs.append(TaskSpec(investigation_id=inv.id, type="collect", plugin="searxng",
-                                  params={"queries": query, "max_results": max_results,
-                                          "language": lang, "time_range": time_range}))
-        if url:
-            specs.append(TaskSpec(investigation_id=inv.id, type="collect", plugin="web",
-                                  params={"urls": url, "found_via": "seed"}, priority=90))
-        if feed:
-            specs.append(TaskSpec(investigation_id=inv.id, type="collect", plugin="rss",
-                                  params={"feeds": feed}))
-        for spec in specs:
-            queue.enqueue(s, spec)
-        inv_id = inv.id
+    try:
+        inv_id, n_specs = create_investigation(
+            App(), name, focus, query, url, feed, lang, time_range, max_results, max_fetches,
+            anonymous, plan_first)
+    except InvestigationError as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1) from None
     console.print(f"[green]✓[/] investigation [bold]{name}[/] (id {inv_id}), "
-                  f"{len(specs)} task(s) queued")
+                  f"{n_specs} task(s) queued")
     if plan_first:
         plan(str(inv_id), max_requests=12, fresh=False, run_after=run_now)
         return
@@ -895,7 +770,6 @@ def report_verify(
     import asyncio
 
     from osint.analyst.tools import AnalystTools
-    from osint.core.config import get_models_config
     from osint.storage.db import Report
 
     a = App()
@@ -1086,7 +960,6 @@ def explain(finding_id: int, depth: int = 4) -> None:
 
 
 def _local_llm(a):
-    from osint.core.config import get_models_config
     from osint.llm.local import LocalLLM
 
     return LocalLLM(get_models_config().local, slots=a.settings.concurrency.llm_slots)
@@ -1454,27 +1327,17 @@ def collect(
     """Queue any collector with JSON params (validated; account-based sources refused)."""
     import json
 
-    from pydantic import ValidationError
-
-    from osint.core.models import TaskSpec
-    from osint.core.plugins import PluginError, check_collector_allowed
-    from osint.orchestrator import queue
+    from osint.orchestrator.investigations import InvestigationError, queue_collection
 
     a = App()
     inv = _inv_id_or_none(a, investigation)
     try:
-        cls = a.registry.get("collector", plugin)
-        check_collector_allowed(cls, a.settings)
-        parsed = json.loads(params)
-        cls.params_schema.model_validate(parsed)
-    except (PluginError, ValueError, ValidationError) as e:
+        tid, created = queue_collection(a, inv, plugin, json.loads(params), priority)
+    except (InvestigationError, ValueError) as e:
         console.print(f"[red]{e}[/]")
         names = [c.name for c, _ in a.registry.list("collector")]
         console.print(f"collectors: {', '.join(names)}")
         raise typer.Exit(1) from None
-    with a.session_factory() as s, s.begin():
-        tid, created = queue.enqueue(s, TaskSpec(investigation_id=inv, type="collect",
-                                                 plugin=plugin, params=parsed, priority=priority))
     console.print(f"task {tid} {'queued' if created else 'already queued'}")
     if run_now:
         _run(str(inv))
@@ -1564,7 +1427,7 @@ def export(
 
 @app.command()
 def ui(port: int = 8765, open_browser: Annotated[bool, typer.Option("--open/--no-open")] = True) -> None:
-    """Local read-only web UI (graph, timeline, findings, reports, evidence) on 127.0.0.1."""
+    """Web GUI on 127.0.0.1: investigations, collection, graph, evidence, Claude jobs, review."""
     import threading
     import webbrowser
 
@@ -1573,7 +1436,7 @@ def ui(port: int = 8765, open_browser: Annotated[bool, typer.Option("--open/--no
     from osint.ui.app import create_app
 
     url = f"http://127.0.0.1:{port}/"
-    console.print(f"OSINT Workbench on {url} (local only, read-only; Ctrl+C to stop)")
+    console.print(f"OSINT Workbench on {url} (local only; Ctrl+C to stop)")
     if open_browser:
         threading.Timer(1.5, lambda: webbrowser.open(url)).start()
     uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="warning")
@@ -1826,6 +1689,19 @@ def grade(
         src.reliability = reliability
         src.reliability_note = note or RELIABILITY[reliability]
         console.print(f"{src.kind} {src.locator}: {reliability} ({src.reliability_note})")
+
+
+@app.command()
+def archive(
+    investigation: str,
+    undo: Annotated[bool, typer.Option("--undo", help="Restore an archived investigation.")] = False,
+) -> None:
+    """Archive an investigation (hidden, schedule stopped; evidence and knowledge are kept)."""
+    from osint.orchestrator.investigations import set_archived
+
+    a = App()
+    inv = _inv_id_or_none(a, investigation)
+    console.print(f"investigation {inv}: {set_archived(a, inv, not undo)}")
 
 
 # --------------------------------------------------------------------------- Tor / profiles
