@@ -208,7 +208,7 @@ Each fetched item gets a **capture bundle**:
 | Capture metadata | final URL after redirects, HTTP status, resolved IP, UTC time from an NTP-synced clock, user agent, proxy / exit node, collector plugin and version | context and reproducibility |
 | Hashes | SHA-256 + SHA-512 for every file in the bundle | integrity |
 | Platform-native IDs | Telegram message/channel IDs, tweet IDs, post permalinks | stable references even after the URL changes |
-| **Third-party archive** (optional per source) | Wayback Machine *Save Page Now* or archive.today, URL stored | an independent copy outside your control. *OPSEC: this leaves a public trace, so it's off by default for sensitive sources.* |
+| **Third-party archive** (optional per source) | Wayback Machine *Save Page Now* or archive.today, URL stored | an independent copy outside your control. *OPSEC: this leaves a public trace, so it's off by default for sensitive sources.* **Not built:** as of 2026-10 anonymous Save Page Now is refused (HTTP 429), and the API needs account keys, which the no-account rule excludes. The local WARC + trusted timestamps carry the proof. |
 
 Media: keep the original file (never re-encode), extract EXIF / metadata with `exiftool`, and record the platform's post time separately from the capture time.
 

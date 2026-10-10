@@ -63,7 +63,7 @@ class ConcurrencySettings(BaseModel):
 
 class EvidenceSettings(BaseModel):
     hash_algorithms: list[str] = Field(default_factory=lambda: ["sha256", "sha512"])
-    archive_org: bool = False
+    archive_org: bool = False         # not implemented: Wayback Save Page Now needs an account now (anonymous = 429); excluded by the no-account rule
     screenshots: bool = True          # full-page PNG + PDF + rendered DOM via Playwright
     screenshot_timeout_s: float = 45
     # trusted timestamps for sealed manifests (only a hash is sent); [] disables
