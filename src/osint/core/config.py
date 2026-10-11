@@ -55,10 +55,13 @@ class ConcurrencySettings(BaseModel):
     llm_slots: int = 2
     network_tasks: int = 16
     browser_pages: int = 2            # concurrent Chromium pages (each costs ~200-500 MB)
-    min_free_ram_gb: float = 3.0      # workers pause claiming new tasks below this
+    min_free_ram_gb: float = 4.0      # workers pause claiming new tasks below this
     # Ollama's runner process grows in RAM over long runs; unload (and transparently reload)
     # the local models when available RAM falls below this
     recycle_llm_below_gb: float = 6.0
+    # ...or as soon as the runner itself holds this much RAM (Ollama 0.40 leaks ~0.8 GB/min
+    # in llama-server during extraction even with the model fully on the GPU)
+    llm_runner_max_gb: float = 6.0
 
 
 class EvidenceSettings(BaseModel):

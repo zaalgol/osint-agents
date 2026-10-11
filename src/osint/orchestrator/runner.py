@@ -78,6 +78,17 @@ def investigation_focus(inv: Investigation) -> str:
     return " | ".join(parts)
 
 
+def runner_rss(psutil) -> int:
+    """RAM held by Ollama's model runners (llama-server / ollama runner processes)."""
+    total = 0
+    for p in psutil.process_iter(["name", "memory_info"]):
+        name = (p.info.get("name") or "").lower()
+        if name.startswith("llama-server") or name.startswith("ollama_llama_server"):
+            mem = p.info.get("memory_info")
+            total += mem.rss if mem else 0
+    return total
+
+
 class Runner:
     def __init__(self, app: App, investigation_id: int, services: dict[str, Any], *,
                  net_workers: int | None = None, llm_workers: int | None = None,
@@ -151,7 +162,11 @@ class Runner:
             self._mem_warned = False
 
     async def _recycle_llm(self) -> None:
-        """Unload Ollama models when RAM runs low; they reload on the next request."""
+        """Unload Ollama models when its runner grows too big or the machine runs short of
+        RAM; they reload on the next request (a few seconds). Ollama's llama-server leaks
+        host RAM during long runs even with the model fully on the GPU (measured ~0.8 GB/min
+        on Ollama 0.40), so the runner's own size is the main trigger: waiting for the whole
+        machine to run low squeezes every other program first."""
         try:
             import psutil
         except ImportError:
@@ -159,15 +174,21 @@ class Runner:
         llm = self.services.get("llm")
         if llm is None:
             return
-        floor = self.app.settings.concurrency.recycle_llm_below_gb * 1024 ** 3
+        cc = self.app.settings.concurrency
+        floor = cc.recycle_llm_below_gb * 1024 ** 3
+        cap = cc.llm_runner_max_gb * 1024 ** 3
         last = 0.0
         while True:
-            await asyncio.sleep(30)
-            if psutil.virtual_memory().available < floor and time.monotonic() - last > 180:
+            await asyncio.sleep(20)
+            runner = runner_rss(psutil)
+            low = psutil.virtual_memory().available < floor
+            if (runner > cap or low) and time.monotonic() - last > 60:
                 last = time.monotonic()
                 models = await llm.unload_all()
                 free = psutil.virtual_memory().available / 1024 ** 3
-                self.on_event(f"[yellow]RAM low[/] ({free:.1f} GB): recycled local models "
+                why = (f"Ollama runner at {runner / 1024 ** 3:.1f} GB" if runner > cap
+                       else "RAM low")
+                self.on_event(f"[yellow]{why}[/] ({free:.1f} GB free): recycled local models "
                               f"{models} to free Ollama's memory")
 
     def _claim_llm(self, s, worker: str) -> Task | None:

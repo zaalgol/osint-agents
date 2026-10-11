@@ -114,3 +114,17 @@ def test_ocr_waits_until_text_extraction_is_drained(pg_settings):
     assert claim() == "ocr"                     # an OCR batch in progress keeps going
     finish("ocr")
     assert claim() == "extract"
+
+
+def test_runner_rss_counts_only_ollama_runners():
+    from types import SimpleNamespace
+
+    from osint.orchestrator.runner import runner_rss
+
+    def proc(name, gb):
+        return SimpleNamespace(info={"name": name, "memory_info": SimpleNamespace(rss=gb * 2**30)})
+
+    fake = SimpleNamespace(process_iter=lambda attrs: [
+        proc("llama-server.exe", 5), proc("llama-server.exe", 1), proc("chrome.exe", 9),
+        proc("ollama.exe", 1), SimpleNamespace(info={"name": None, "memory_info": None})])
+    assert runner_rss(fake) == 6 * 2**30

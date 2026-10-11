@@ -23,6 +23,7 @@ concurrency:
   network_tasks: 16               # crawl/download tasks
   browser_pages: 2                # concurrent Chromium screenshot pages (RAM heavy)
   min_free_ram_gb: 4.0            # pause claiming new work when free RAM is below this
+  llm_runner_max_gb: 6.0          # ...or when Ollama's runner itself holds this much RAM (it leaks)
   recycle_llm_below_gb: 6.0       # unload/reload Ollama models when RAM gets this low
 
 evidence:
