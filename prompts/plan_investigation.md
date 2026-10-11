@@ -11,8 +11,14 @@ $seed
 3. Queue collection with `request_collection` (budget: $max_requests requests):
    - `searxng` queries in every language relevant to the actors and region (for example
      Arabic, Farsi, Russian, French, plus English), including names, aliases, transliteration
-     variants and key events. Group several queries per request. Use `time_range` when
-     recency matters.
+     variants and key events. Group several queries per request. `time_range`
+     (day/week/month/year) counts back from *today*: use it only for recent events. For a
+     past window (e.g. "October 2023"), leave it empty and put the dates, events and
+     period terms in the query text instead.
+   - `wayback` with `from_date`/`to_date` (YYYYMMDD) for organisers' sites and pages as
+     they looked during a past window (pages are often edited or deleted later).
+   - `telegram_public` for public channels of the actors (`since` = ISO start date of the
+     window; it reads from the newest post backwards, so raise `max_posts` for old windows).
    - `web` for specific known primary sources (official statements, reputable trackers).
    - `rss` for feeds that cover the topic continuously.
    Prefer primary sources and specialised outlets over aggregators. Do not request
