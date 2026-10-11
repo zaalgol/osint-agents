@@ -269,9 +269,13 @@ class Streamed(httpx.AsyncByteStream):
         yield self.data
 
 
+SEARCHES: list[httpx.QueryParams] = []
+
+
 def web_handler(req: httpx.Request) -> httpx.Response:
     url = str(req.url)
     if req.url.path == "/search":
+        SEARCHES.append(req.url.params)
         results = [{"url": "https://news.example/front-attack", "title": "Front attack"},
                    {"url": "https://blog.example/other", "title": "Lentils"}]
         return httpx.Response(200, stream=Streamed(json.dumps({"results": results}).encode()),
@@ -343,6 +347,7 @@ def test_end_to_end_search_capture_parse_extract(pg_settings):
         assert len({a.id for a in arts}) >= 4
         search = s.scalar(select(Artifact).where(Artifact.mime == "application/json"))
         assert search.capture_meta["extra"]["query"] == "northern front attack"
+        assert SEARCHES[-1]["language"] == "all"     # no language given: all, not English
         # search JSON is evidence but not parsed; the 3 HTML pages became documents
         assert s.scalar(select(func.count(Document.id))) >= 3
         # scope to this investigation: the session-wide test DB holds other tests' data

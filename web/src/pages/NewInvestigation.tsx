@@ -11,7 +11,7 @@ export function NewInvestigation() {
   const qc = useQueryClient();
   const toast = useToast();
   const [f, setF] = useState({
-    name: "", focus: "", lang: "", time_range: "", max_results: 10, max_fetches: 200,
+    name: "", focus: "", lang: "all", time_range: "", max_results: 10, max_fetches: 200,
     anonymous: false, plan: true, run: true,
   });
   const [queries, setQueries] = useState<string[]>([]);
@@ -51,7 +51,8 @@ export function NewInvestigation() {
           <label className="field">RSS/Atom feeds <ListInput value={feeds} onChange={setFeeds} placeholder="https://…/feed.xml" /></label>
           <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", alignContent: "start" }}>
             <label className="field">Search language
-              <input value={f.lang} placeholder="en, ar, ru…" onChange={(e) => set("lang", e.target.value)} />
+              <input value={f.lang} placeholder="all" onChange={(e) => set("lang", e.target.value)} />
+              <span className="hint">all = every language (default). Or a code: en, ar, ru, fa…</span>
             </label>
             <label className="field">Time range
               <select value={f.time_range} onChange={(e) => set("time_range", e.target.value)}>

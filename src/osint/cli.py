@@ -303,7 +303,7 @@ def new(
     feed: Annotated[
         list[str] | None, typer.Option("--feed", "-f", help="RSS/Atom feed (repeatable).")
     ] = None,
-    lang: Annotated[str | None, typer.Option(help="Search language, e.g. en, ar, ru.")] = None,
+    lang: Annotated[str | None, typer.Option(help="Search language code, e.g. en, ar, ru. Default: all languages.")] = None,
     time_range: Annotated[str | None, typer.Option(help="day|week|month|year")] = None,
     max_results: Annotated[int, typer.Option(help="Results to fetch per query.")] = 10,
     max_fetches: Annotated[int, typer.Option(help="Cap on fetch tasks.")] = 200,

@@ -95,7 +95,7 @@ class PasteCollector(Collector):
                 if key in self._done:
                     continue
                 qp: dict[str, Any] = {"q": f"{query} site:{host}", "format": "json",
-                                      "categories": "general"}
+                                      "categories": "general", "language": "all"}
                 res = await capture_url(ctx, f"{ctx.settings.searxng.url}/search", self.ident,
                                         screenshot=False, params=qp, platform="searxng")
                 res.parse = False

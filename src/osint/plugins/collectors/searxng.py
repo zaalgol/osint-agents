@@ -24,7 +24,8 @@ class SearxngParams(BaseModel):
     queries: list[str] = Field(min_length=1)
     max_results: int = Field(10, ge=1, le=100)    # per query
     pages: int = Field(1, ge=1, le=10)
-    language: str | None = None                   # e.g. "ar", "en", "ru"
+    language: str | None = Field("all", description="all = every language (default), or a code: "
+                          "en, ar, ru, fa...")
     time_range: str | None = None                 # day|week|month|year
     categories: str = "general,news"
     fetch_results: bool = True
@@ -49,8 +50,8 @@ class SearxngCollector(Collector):
             query, page = grid[i]
             qp: dict[str, Any] = {"q": query, "format": "json", "pageno": page,
                                   "categories": params.categories}
-            if params.language:
-                qp["language"] = params.language
+            # explicit, or SearXNG's "auto" would follow our Accept-Language (English)
+            qp["language"] = params.language or "all"
             if self._time_range or params.time_range:
                 qp["time_range"] = self._time_range or params.time_range
             item = await capture_url(ctx, f"{ctx.settings.searxng.url}/search", self.ident,
