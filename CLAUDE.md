@@ -149,14 +149,26 @@ enrich (on demand): rdap, geocode, btc, sanctions → facts with captured proof
 ```
 
 - **Queue** (`orchestrator/queue.py`):
-  - Task types: `collect`, `parse`, `extract`, `enrich`.
+  - Task types: `collect`, `parse`, `ocr`, `extract`, `enrich`.
   - Tasks deduplicate on `(type, params_hash)` and are claimed with
     `FOR UPDATE SKIP LOCKED`.
   - A heartbeat stores checkpoints. Stale `running` tasks are reclaimed.
   - All state is in the DB, so `resume` works after Ctrl+C or a crash.
 - **Runner** (`orchestrator/runner.py`):
-  - Network tasks (collect, parse, enrich) and LLM tasks (extract) run in separate pools.
+  - Network tasks (collect, parse, enrich) and GPU tasks (extract, ocr) run in separate
+    pools.
   - LLM concurrency matches `OLLAMA_NUM_PARALLEL`.
+  - **One model in memory at a time.** The 14B and 27B models don't fit in 16 GB of VRAM
+    together, and the overflow goes to system RAM. That ran the machine out of memory
+    during a Telegram-heavy run. Two mechanisms prevent it:
+    - **Batching:** parse only records EXIF and queues an `ocr` task.
+      `Runner._claim_llm` runs OCR only once collect, parse and extract are drained.
+      An OCR batch, once started, is finished before extraction resumes.
+    - **Model gate:** `LocalLLM._enter` lets only one chat model's calls run. On a
+      switch it unloads the previous model (`keep_alive: 0`) and admits everyone already
+      waiting for the new model. Turn it off with `local.exclusive: false` in
+      `models.yaml`. The gate works per process, so a separate `reextract` running in
+      parallel isn't covered.
   - Workers stop claiming when free RAM < `concurrency.min_free_ram_gb`.
   - The Ollama runner is recycled when RAM < `concurrency.recycle_llm_below_gb`, because
     `llama-server` leaks system RAM on long runs.
@@ -353,6 +365,7 @@ LIST_AUTHORITIES`).
   - OCR through the `vision` role (`LocalLLM.chat_json(images=...)`), for images and for
     PDF pages without a text layer (up to `media.max_ocr_pages`).
   - OCR documents get parser `ocr:...` and `meta.ocr.machine_read = true`.
+  - OCR runs as a separate `ocr` task, after text extraction (see Pipeline).
 - **`media/transcribe.py`:** faster-whisper for YouTube videos that have no captions.
   Audio is decoded through Chromium, because PyAV is blocked.
 - **Telegram photos** are captured as `telegram:<post>:photoN` and OCRed.

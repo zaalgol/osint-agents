@@ -444,7 +444,10 @@ schtasks /Create /SC HOURLY /TN "osint-daemon" /TR "cmd /c cd /d C:\code\osint-a
 - **Backup:** `osint snapshot` (or the System page) saves the database, the evidence, the
   proofs and the config, with checksums.
 - **Memory (32 GB machine):**
-  - Work pauses when free RAM runs low (`concurrency.min_free_ram_gb`).
+  - Only one AI model is loaded at a time. Text extraction uses the 14B model. Reading
+    photos and scanned PDFs (OCR) uses the 27B model, which runs as a batch after the
+    text is done. Expect OCR'd photos to appear in the results near the end of a run.
+  - Work pauses when free RAM runs low (`concurrency.min_free_ram_gb`, 4 GB).
   - The AI runner is restarted automatically when its memory grows too much
     (`concurrency.recycle_llm_below_gb`).
   - The large model unloads a minute after use.
@@ -550,6 +553,7 @@ Every command has `--help`.
 | Anonymous run refuses to start | `osint tor start`, then `docker compose up -d searxng-tor` |
 | Many pages "blocked" | Check WARP is connected (`warp-cli status`). Some sites block every automated client; this is recorded, not bypassed. |
 | Claude job says the usage limit was hit | Wait for the limit to reset. Local collection keeps working. |
-| Run is slow or paused | Low RAM: close other programs. See the Jobs log. |
+| Run is slow or paused | Low RAM: close other programs (games, launchers, many browser tabs). See the Jobs log. |
+| A run started by Claude Code stopped by itself | Claude Code stops its background processes when memory is critically low. Start long runs and `osint ui` from your own terminal. |
 | GUI job shows "lost" | The GUI was restarted while it ran. Check `osint status <inv>`, and `osint resume` if needed. |
 | Review queue is huge | On the Review page, bulk-dismiss "quote not found" and "ontology" items. They can never become facts anyway. |

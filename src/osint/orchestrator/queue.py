@@ -140,6 +140,15 @@ def counts(session: Session, investigation_id: int) -> dict[tuple[str, str], int
     return {(t, s): n for t, s, n in rows}
 
 
+def active(session: Session, investigation_id: int, types: list[str],
+           running_only: bool = False) -> bool:
+    """Any pending/running (or only running) task of these types?"""
+    statuses = ["running"] if running_only else ["pending", "running"]
+    return bool(session.scalar(select(func.count()).where(
+        Task.investigation_id == investigation_id, Task.type.in_(types),
+        Task.status.in_(statuses))))
+
+
 def has_open_work(session: Session, investigation_id: int) -> bool:
     return bool(session.scalar(select(func.count()).where(
         Task.investigation_id == investigation_id, Task.status.in_(["pending", "running"]))))

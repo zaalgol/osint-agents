@@ -4,8 +4,10 @@ Pipeline (each step is a durable task):
     collect (plugin) --CapturedItem--> parse --document--> extract
             \\--FollowUp--> collect (e.g. search result -> web fetch)
 
-Network-bound work (collect/parse) runs with many workers; GPU-bound work (extract) is
-capped at llm_slots. Ctrl+C releases in-flight tasks back to pending; ``osint resume``
+Network-bound work (collect/parse) runs with many workers; GPU-bound work (extract, ocr)
+is capped at llm_slots and batched per model: images and scanned PDFs get an `ocr` task
+that runs only once text extraction is drained, so the 14B and 27B models are never
+loaded together (see _claim_llm and LocalLLM's model gate). Ctrl+C releases in-flight tasks back to pending; ``osint resume``
 picks them up again, with collectors restored from their checkpoints.
 """
 
@@ -36,7 +38,8 @@ from osint.storage.raw_store import BlockedContent
 log = logging.getLogger(__name__)
 
 NET_TYPES = ["collect", "parse", "enrich"]
-LLM_TYPES = ["extract"]
+LLM_TYPES = ["extract", "ocr"]
+UPSTREAM = ["collect", "parse", "extract"]   # OCR waits until these are drained
 HEARTBEAT_S = 20
 STALE_AFTER = timedelta(seconds=90)
 
@@ -112,7 +115,7 @@ class Runner:
             self.on_event(f"reclaimed {n} stale task(s)")
         workers = [asyncio.create_task(self._worker(NET_TYPES, f"net{i}"))
                    for i in range(self.net_workers)]
-        workers += [asyncio.create_task(self._worker(LLM_TYPES, f"llm{i}"))
+        workers += [asyncio.create_task(self._worker(LLM_TYPES, f"llm{i}", llm=True))
                     for i in range(self.llm_workers)]
         recycler = asyncio.create_task(self._recycle_llm())
         try:
@@ -167,11 +170,24 @@ class Runner:
                 self.on_event(f"[yellow]RAM low[/] ({free:.1f} GB): recycled local models "
                               f"{models} to free Ollama's memory")
 
-    async def _worker(self, types: list[str], name: str) -> None:
+    def _claim_llm(self, s, worker: str) -> Task | None:
+        """Batch GPU work per model: all text extraction first, then OCR (the big vision
+        model) in one go, then extraction of the OCR'd text. Interleaving them would load
+        both models at once, and the second spills into system RAM."""
+        if queue.active(s, self.inv_id, ["ocr"], running_only=True):
+            return queue.claim(s, self.inv_id, ["ocr"], worker=worker)   # finish the batch
+        task = queue.claim(s, self.inv_id, ["extract"], worker=worker)
+        if task is None and not queue.active(s, self.inv_id, UPSTREAM):
+            task = queue.claim(s, self.inv_id, ["ocr"], worker=worker)
+        return task
+
+    async def _worker(self, types: list[str], name: str, llm: bool = False) -> None:
         while not self._stop.is_set():
             await self._wait_for_memory()
             with self.Session() as s, s.begin():
-                task = queue.claim(s, self.inv_id, types, worker=f"{queue.WORKER_ID}/{name}")
+                worker = f"{queue.WORKER_ID}/{name}"
+                task = (self._claim_llm(s, worker) if llm
+                        else queue.claim(s, self.inv_id, types, worker=worker))
                 if task is None:
                     open_work = queue.has_open_work(s, self.inv_id)
             if task is None:
@@ -186,7 +202,7 @@ class Runner:
         hb = asyncio.create_task(self._heartbeat(task.id))
         label = f"{task.type}:{task.plugin}#{task.id}"
         try:
-            handler = {"collect": self._collect, "parse": self._parse,
+            handler = {"collect": self._collect, "parse": self._parse, "ocr": self._ocr_task,
                        "extract": self._extract, "enrich": self._enrich}[task.type]
             result = await handler(task)
             hb.cancel()
@@ -326,7 +342,7 @@ class Runner:
         )
         media_meta: dict = {}
         if doc is None and self.app.settings.media.ocr:
-            doc, media_meta = await self._ocr(art, data)
+            media_meta = await self._queue_ocr(art, data)
         if media_meta.get("exif", {}).get("gps") or media_meta.get("exif", {}).get("Make"):
             with self.Session() as s, s.begin():
                 # where/when/which camera is a lead (and can identify people): a human looks
@@ -337,7 +353,39 @@ class Runner:
                                  payload={"artifact_id": artifact_id, **media_meta},
                                  created_by="media:exif"))
         if doc is None:
+            if media_meta.get("ocr") == "queued":
+                return {"document": None, **media_meta}
             return {"document": None, "reason": "no extractable text", **media_meta}
+        return self._store_document(artifact_id, doc)
+
+    async def _queue_ocr(self, art: Artifact, data: bytes) -> dict:
+        """EXIF now (cheap); the OCR itself becomes an `ocr` task for the GPU workers."""
+        from osint.evidence.parse import needs_ocr
+        from osint.media import image
+
+        kind = needs_ocr(art.mime, data)
+        if kind is None:
+            return {}
+        meta: dict = {}
+        if kind == "image":
+            meta["exif"] = await asyncio.to_thread(image.exif, data)
+        with self.Session() as s, s.begin():
+            queue.enqueue(s, TaskSpec(investigation_id=self.inv_id, type="ocr", plugin="ocr",
+                                      params={"artifact_id": art.id}, priority=120))
+        return {**meta, "ocr": "queued"}
+
+    async def _ocr_task(self, task: Task) -> dict:
+        artifact_id = int(task.params["artifact_id"])
+        with self.Session() as s:
+            art = s.get(Artifact, artifact_id)
+        data = self.app.raw_store.read_bytes(art.sha256)
+        doc, meta = await self._ocr(art, data)
+        meta.pop("exif", None)                  # recorded by the parse task
+        if doc is None:
+            return {"document": None, **meta}
+        return self._store_document(artifact_id, doc)
+
+    def _store_document(self, artifact_id: int, doc) -> dict:
         with self.Session() as s, s.begin():
             existing = s.scalar(select(Document).where(Document.artifact_id == artifact_id,
                                                        Document.text_sha256 == doc.text_sha256))

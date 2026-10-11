@@ -9,6 +9,13 @@ Backends:
 
 Every call is validated with pydantic. On invalid output, the model gets one retry with
 the validation error. Calls are limited by a semaphore (llm_slots) and logged to run_log.
+
+One chat model at a time (``exclusive``): the 14B extraction model and the 27B vision
+model don't fit in 16 GB of VRAM together, and Ollama then spills the second one into
+system RAM (10+ GB). A call for another model waits until the current model's calls
+have finished, then the current model is unloaded before the next one loads. While a
+switch is waiting, no new calls for the current model are admitted, so neither side
+starves. The runner batches work per model so switches stay rare.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import hashlib
 import json
 import logging
 import time
+from collections import Counter
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TypeVar
@@ -54,9 +62,17 @@ class LLMUsage:
 
 class LocalLLM:
     def __init__(self, cfg: LocalModels, slots: int = 2, timeout_s: float = 600,
-                 transport: httpx.AsyncBaseTransport | None = None):
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 exclusive: bool | None = None):
         self.cfg = cfg
         self._sem = asyncio.Semaphore(slots)
+        self.exclusive = cfg.exclusive if exclusive is None else exclusive
+        self._gate = asyncio.Condition()
+        self.current: str | None = None       # the chat model whose calls may run now
+        self._inflight = 0
+        self._waiting: Counter[str] = Counter()
+        self._admit = 0                       # waiters admitted with the current batch
+        self.switches = 0
         self._client = httpx.AsyncClient(timeout=timeout_s, transport=transport)
         self._think_unsupported: set[str] = set()
         self.usage_log: list[LLMUsage] = []   # drained by the orchestrator into run_log
@@ -86,6 +102,54 @@ class LocalLLM:
             except httpx.HTTPError:
                 continue
         return done
+
+    async def _unload(self, model: str) -> None:
+        if self.cfg.backend != "ollama":
+            return
+        base = self.cfg.base_url.removesuffix("/v1")
+        try:
+            await self._client.post(f"{base}/api/generate", json={"model": model, "keep_alive": 0})
+        except httpx.HTTPError:
+            log.info("could not unload %s before switching models", model)
+
+    async def _enter(self, model: str) -> None:
+        if not self.exclusive:
+            return
+        async with self._gate:
+            self._waiting[model] += 1
+            try:
+                while True:
+                    others = any(m != model for m in self._waiting)
+                    if self.current is None:
+                        break                          # idle: anyone may start
+                    if self.current == model and (not others or self._admit > 0):
+                        if others:
+                            self._admit -= 1           # admitted with the batch at switch time
+                        break                          # join the running batch
+                    if self.current != model and self._inflight == 0:
+                        break                          # batch drained: switch to us
+                    await self._gate.wait()
+            finally:
+                self._waiting[model] -= 1
+                if not self._waiting[model]:
+                    del self._waiting[model]
+            if self.current != model:
+                if self.current is not None:
+                    await self._unload(self.current)   # free VRAM/RAM before the next loads
+                    self.switches += 1
+                # everyone already waiting for this model comes along; later arrivals wait
+                # their turn if another model is waiting, so neither side starves
+                self._admit = self._waiting.get(model, 0)
+                self.current = model
+                self._gate.notify_all()
+            self._inflight += 1
+
+    async def _leave(self) -> None:
+        if not self.exclusive:
+            return
+        async with self._gate:
+            self._inflight -= 1
+            self._gate.notify_all()
 
     def drain_usage(self, tag: int | None) -> list[LLMUsage]:
         mine = [u for u in self.usage_log if u.tag == tag]
@@ -141,11 +205,15 @@ class LocalLLM:
             json.dumps(messages, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
         t0 = time.monotonic()
-        async with self._sem:
-            if self.cfg.backend == "ollama":
-                content, tin, tout, truncated = await self._ollama(r, messages, schema)
-            else:
-                content, tin, tout, truncated = await self._openai(r, messages, schema)
+        await self._enter(r.model)            # before the semaphore: a waiter holds no slot
+        try:
+            async with self._sem:
+                if self.cfg.backend == "ollama":
+                    content, tin, tout, truncated = await self._ollama(r, messages, schema)
+                else:
+                    content, tin, tout, truncated = await self._openai(r, messages, schema)
+        finally:
+            await self._leave()
         self.usage_log.append(LLMUsage(r.model, prompt_hash, tin, tout,
                                        int((time.monotonic() - t0) * 1000), usage_tag.get()))
         return content, truncated

@@ -198,6 +198,7 @@ class LocalModels(BaseModel):
     backend: str = "ollama"
     base_url: str = "http://127.0.0.1:11434/v1"
     api_key: str = "ollama"
+    exclusive: bool = True        # one chat model loaded at a time (see llm/local.py)
     roles: dict[str, LocalRole] = Field(default_factory=dict)
 
 

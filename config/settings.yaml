@@ -22,7 +22,7 @@ concurrency:
   llm_slots: 2                    # in-flight local LLM calls (match OLLAMA_NUM_PARALLEL)
   network_tasks: 16               # crawl/download tasks
   browser_pages: 2                # concurrent Chromium screenshot pages (RAM heavy)
-  min_free_ram_gb: 3.0            # pause claiming new work when free RAM is below this
+  min_free_ram_gb: 4.0            # pause claiming new work when free RAM is below this
   recycle_llm_below_gb: 6.0       # unload/reload Ollama models when RAM gets this low
 
 evidence:
