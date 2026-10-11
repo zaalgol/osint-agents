@@ -78,15 +78,33 @@ def investigation_focus(inv: Investigation) -> str:
     return " | ".join(parts)
 
 
+RUNNER_NAMES = ("llama-server", "ollama_llama_server")
+
+
 def runner_rss(psutil) -> int:
     """RAM held by Ollama's model runners (llama-server / ollama runner processes)."""
     total = 0
     for p in psutil.process_iter(["name", "memory_info"]):
         name = (p.info.get("name") or "").lower()
-        if name.startswith(("llama-server", "ollama_llama_server")):
+        if name.startswith(RUNNER_NAMES):
             mem = p.info.get("memory_info")
             total += mem.rss if mem else 0
     return total
+
+
+def kill_runners(psutil) -> int:
+    """End Ollama's runner processes; `ollama serve` starts a fresh one on the next request.
+    Unloading models through the API doesn't help: Ollama 0.40 keeps one llama-server
+    process across model loads, and the leaked memory stays with that process."""
+    procs = [p for p in psutil.process_iter(["name"])
+             if (p.info.get("name") or "").lower().startswith(RUNNER_NAMES)]
+    for p in procs:
+        try:
+            p.kill()
+        except psutil.Error:
+            continue
+    psutil.wait_procs(procs, timeout=15)
+    return len(procs)
 
 
 class Runner:
@@ -162,11 +180,12 @@ class Runner:
             self._mem_warned = False
 
     async def _recycle_llm(self) -> None:
-        """Unload Ollama models when its runner grows too big or the machine runs short of
-        RAM; they reload on the next request (a few seconds). Ollama's llama-server leaks
-        host RAM during long runs even with the model fully on the GPU (measured ~0.8 GB/min
-        on Ollama 0.40), so the runner's own size is the main trigger: waiting for the whole
-        machine to run low squeezes every other program first."""
+        """Restart Ollama's runner process when it grows too big or the machine runs short
+        of RAM; the model reloads on the next request (a few seconds). Ollama's llama-server
+        leaks host RAM during long runs even with the model fully on the GPU (measured
+        ~0.8 GB/min on Ollama 0.40), so the runner's own size is the main trigger: waiting
+        for the whole machine to run low squeezes every other program first. In-flight LLM
+        calls finish first (LocalLLM.drained), so no request is cut off."""
         try:
             import psutil
         except ImportError:
@@ -184,12 +203,15 @@ class Runner:
             low = psutil.virtual_memory().available < floor
             if (runner > cap or low) and time.monotonic() - last > 60:
                 last = time.monotonic()
-                models = await llm.unload_all()
-                free = psutil.virtual_memory().available / 1024 ** 3
                 why = (f"Ollama runner at {runner / 1024 ** 3:.1f} GB" if runner > cap
                        else "RAM low")
-                self.on_event(f"[yellow]{why}[/] ({free:.1f} GB free): recycled local models "
-                              f"{models} to free Ollama's memory")
+                if llm.cfg.backend == "ollama":
+                    n = await llm.drained(lambda: asyncio.to_thread(kill_runners, psutil))
+                    action = f"restarted {n} Ollama runner process(es)"
+                else:
+                    action = f"unloaded {await llm.unload_all()}"
+                free = psutil.virtual_memory().available / 1024 ** 3
+                self.on_event(f"[yellow]{why}[/]: {action} ({free:.1f} GB free now)")
 
     def _claim_llm(self, s, worker: str) -> Task | None:
         """Batch GPU work per model: all text extraction first, then OCR (the big vision

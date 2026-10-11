@@ -128,3 +128,47 @@ def test_runner_rss_counts_only_ollama_runners():
         proc("llama-server.exe", 5), proc("llama-server.exe", 1), proc("chrome.exe", 9),
         proc("ollama.exe", 1), SimpleNamespace(info={"name": None, "memory_info": None})])
     assert runner_rss(fake) == 6 * 2**30
+
+
+def test_drained_waits_for_inflight_calls_and_holds_new_ones():
+    log: list[str] = []
+
+    async def handler(req: httpx.Request) -> httpx.Response:
+        log.append("call start")
+        await asyncio.sleep(0.05)
+        log.append("call end")
+        return httpx.Response(200, json={"message": {"content": '{"ok": true}'}})
+
+    cfg = LocalModels(base_url="http://o.test/v1", roles={"agent": LocalRole(model="m")})
+    llm = LocalLLM(cfg, slots=2, transport=httpx.MockTransport(handler))
+
+    async def go():
+        first = asyncio.create_task(llm.chat_json("agent", "s", "u", Out))
+        await asyncio.sleep(0.01)                        # first call is in flight
+        restart = asyncio.create_task(llm.drained(lambda: log.append("restart")))
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(llm.chat_json("agent", "s", "u", Out))
+        await asyncio.gather(first, restart, second)
+        await llm.aclose()
+
+    asyncio.run(go())
+    assert log == ["call start", "call end", "restart", "call start", "call end"]
+
+
+def test_kill_runners_ends_only_ollama_runners():
+    from types import SimpleNamespace
+
+    from osint.orchestrator.runner import kill_runners
+
+    killed: list[str] = []
+
+    def proc(name):
+        return SimpleNamespace(info={"name": name}, kill=lambda: killed.append(name))
+
+    fake = SimpleNamespace(
+        Error=Exception,
+        process_iter=lambda attrs: [proc("llama-server.exe"), proc("ollama.exe"),
+                                    proc("chrome.exe")],
+        wait_procs=lambda procs, timeout: (procs, []))
+    assert kill_runners(fake) == 1
+    assert killed == ["llama-server.exe"]

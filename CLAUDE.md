@@ -170,8 +170,12 @@ enrich (on demand): rdap, geocode, btc, sanctions → facts with captured proof
       `models.yaml`. The gate works per process, so a separate `reextract` running in
       parallel isn't covered.
   - Workers stop claiming when free RAM < `concurrency.min_free_ram_gb`.
-  - The Ollama runner is recycled when RAM < `concurrency.recycle_llm_below_gb`, because
-    `llama-server` leaks system RAM on long runs.
+  - `llama-server` leaks system RAM on long runs (~0.8 GB/min on Ollama 0.40.2), and
+    unloading models through the API doesn't free it: 0.40 keeps one runner process
+    across model loads. So the runner kills that process (`kill_runners`; `ollama serve`
+    respawns it) when it exceeds `concurrency.llm_runner_max_gb` or RAM drops below
+    `concurrency.recycle_llm_below_gb`. `LocalLLM.drained` holds new calls back and waits
+    for in-flight ones first, so no request is cut off.
   - Ctrl+C means a graceful pause: in-flight tasks are released back to the queue
     (exit code 130).
 - **Fetch budget:** `max_fetches` per investigation caps collect tasks.

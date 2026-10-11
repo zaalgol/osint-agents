@@ -73,6 +73,7 @@ class LocalLLM:
         self._waiting: Counter[str] = Counter()
         self._admit = 0                       # waiters admitted with the current batch
         self.switches = 0
+        self._paused = 0                      # >0 while drained() holds new calls back
         self._client = httpx.AsyncClient(timeout=timeout_s, transport=transport)
         self._think_unsupported: set[str] = set()
         self.usage_log: list[LLMUsage] = []   # drained by the orchestrator into run_log
@@ -103,6 +104,22 @@ class LocalLLM:
                 continue
         return done
 
+    async def drained(self, action):
+        """Run `action` (sync or async) with no chat call in flight and none admitted until
+        it returns: used to restart Ollama's runner process without breaking a request."""
+        async with self._gate:
+            self._paused += 1
+            try:
+                await self._gate.wait_for(lambda: self._inflight == 0)
+                result = action()
+                if asyncio.iscoroutine(result):
+                    result = await result
+                self.current = None              # the next call loads its model fresh
+                return result
+            finally:
+                self._paused -= 1
+                self._gate.notify_all()
+
     async def _unload(self, model: str) -> None:
         if self.cfg.backend != "ollama":
             return
@@ -113,12 +130,17 @@ class LocalLLM:
             log.info("could not unload %s before switching models", model)
 
     async def _enter(self, model: str) -> None:
-        if not self.exclusive:
-            return
         async with self._gate:
+            await self._gate.wait_for(lambda: not self._paused)
+            if not self.exclusive:
+                self._inflight += 1
+                return
             self._waiting[model] += 1
             try:
                 while True:
+                    if self._paused:
+                        await self._gate.wait()
+                        continue
                     others = any(m != model for m in self._waiting)
                     if self.current is None:
                         break                          # idle: anyone may start
@@ -145,8 +167,6 @@ class LocalLLM:
             self._inflight += 1
 
     async def _leave(self) -> None:
-        if not self.exclusive:
-            return
         async with self._gate:
             self._inflight -= 1
             self._gate.notify_all()
