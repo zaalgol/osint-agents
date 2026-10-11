@@ -83,7 +83,7 @@ def runner_rss(psutil) -> int:
     total = 0
     for p in psutil.process_iter(["name", "memory_info"]):
         name = (p.info.get("name") or "").lower()
-        if name.startswith("llama-server") or name.startswith("ollama_llama_server"):
+        if name.startswith(("llama-server", "ollama_llama_server")):
             mem = p.info.get("memory_info")
             total += mem.rss if mem else 0
     return total
