@@ -139,3 +139,34 @@ def test_cancel_uses_the_stop_file_the_cli_watches(tmp_path, monkeypatch):
     assert jm.cancel(job.id)["status"] == "cancelled" and stop.exists()
     with pytest.raises(JobError):
         jm.cancel(999)
+
+
+def test_gui_refuses_a_run_while_a_terminal_runner_holds_the_queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs_mod.subprocess, "Popen", FakeProc)
+    jm = JobManager(tmp_path)
+    jm.busy_check = lambda inv: "osint runner pid 77" if inv == 5 else None
+    with pytest.raises(JobError, match="pid 77"):
+        jm.start("run", 5, {})
+    assert jm.start("analyze", 5, {}).status == "running"    # Claude jobs don't touch the queue
+    assert jm.start("run", 6, {}).queue_worker
+
+
+@pytest.mark.integration
+def test_runner_lock_is_exclusive_and_visible(pg_settings):
+    from osint.core.context import App
+    from osint.orchestrator import queue
+
+    a = App(pg_settings)
+    first, second = queue.RunnerLock(a.session_factory, 991), queue.RunnerLock(a.session_factory, 991)
+    assert first.acquire() is None
+    holder = second.acquire()
+    assert holder and "osint runner pid" in holder
+    with a.session_factory() as s:
+        assert queue.runner_holder(s, 991) == holder
+        assert queue.runner_holder(s, 992) is None
+    first.release()
+    assert second.acquire() is None                           # free again after release
+    second.conn.invalidate()                                  # a dead process: Postgres drops it
+    second.conn = None
+    with a.session_factory() as s:
+        assert queue.runner_holder(s, 991) is None

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -158,6 +159,8 @@ class JobManager:
         self._lock = threading.Lock()
         self._procs: dict[int, subprocess.Popen] = {}
         self.jobs: dict[int, Job] = {}
+        # investigation id -> who else is processing its queue (e.g. a terminal run), or None
+        self.busy_check: Callable[[int], str | None] | None = None
         self._load()
 
     # ------------------------------------------------------------------ persistence
@@ -198,6 +201,11 @@ class JobManager:
                 if busy:
                     raise JobError(f"job {busy[0].id} ({busy[0].label}) is already processing "
                                    "this investigation's queue; wait for it or cancel it")
+                holder = self.busy_check(investigation_id) if self.busy_check else None
+                if holder:
+                    raise JobError(f"this investigation is already being processed by {holder} "
+                                   "(started outside the GUI, e.g. in a terminal); wait for it "
+                                   "or stop it there with Ctrl+C")
             job = Job(id=max(self.jobs, default=0) + 1, action=action, label=label, args=args,
                       investigation_id=investigation_id, queue_worker=queue_worker)
             env = {**os.environ, "PYTHONIOENCODING": "utf-8", "NO_COLOR": "1", "TERM": "dumb",

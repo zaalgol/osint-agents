@@ -37,7 +37,9 @@ export function OverviewTab({ inv, status }: { inv: number; status: Investigatio
 
       <div className="card">
         <div className="spread"><h3>Collection queue</h3>
-          {runningQueue ? <Badge tone="accent">processing</Badge> : pending > 0 ? <Badge tone="warn">{pending} waiting: press Run</Badge> : <Badge tone="ok">idle</Badge>}
+          {runningQueue ? <Badge tone="accent">processing</Badge>
+            : status.runner ? <Badge tone="accent" title={`Started outside the GUI (${status.runner}). Follow or pause it in that terminal.`}>processing in a terminal</Badge>
+            : pending > 0 ? <Badge tone="warn">{pending} waiting: press Run</Badge> : <Badge tone="ok">idle</Badge>}
         </div>
         <div className="table-wrap">
           <table>

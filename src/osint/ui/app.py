@@ -69,6 +69,14 @@ def create_app(app: App | None = None, jobs: JobManager | None = None) -> Starle
     csrf = secrets.token_urlsafe(32)
     jm = jobs or JobManager(a.settings.data_path)
 
+    def runner_of(inv_id: int) -> str | None:
+        from osint.orchestrator import queue
+
+        with S() as s:
+            return queue.runner_holder(s, inv_id)
+
+    jm.busy_check = runner_of      # a run started in a terminal also holds the queue
+
     def write_allowed(req: Request) -> bool:
         origin = req.headers.get("origin") or req.headers.get("referer") or ""
         local = origin.startswith(("http://127.0.0.1:", "http://localhost:"))
@@ -240,7 +248,8 @@ def create_app(app: App | None = None, jobs: JobManager | None = None) -> Starle
                 "config": inv.config or {}, "created": inv.created_at.isoformat(),
                 "profile": (inv.config or {}).get("network_profile", "standard"),
                 "tasks": tasks, "knowledge": {**refs, "review_open": review_open},
-                "failed": failed, "schedule": schedule})
+                "failed": failed, "schedule": schedule,
+                "runner": queue.runner_holder(s, inv_id)})
 
     async def overview(req: Request) -> Response:
         inv = int(req.path_params["inv"])

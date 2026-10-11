@@ -348,6 +348,14 @@ def _run(ref: str, force_reclaim: bool = False, retry_failed: bool = False,
         a.settings.evidence.screenshots = False
     if extract_role:
         a.settings.extraction.llm_role = extract_role
+    with a.session_factory() as s:
+        inv_id = _find_investigation(s, ref).id
+    lock = queue.RunnerLock(a.session_factory, inv_id)
+    if (holder := lock.acquire()) is not None:      # before reclaiming its running tasks
+        console.print(f"[red]investigation {inv_id} is already being processed[/] by {holder}. "
+                      "Wait for it to finish, or stop it (Ctrl+C in its window, or Cancel in "
+                      "the GUI's Jobs page).")
+        raise typer.Exit(1)
     with a.session_factory() as s, s.begin():
         inv = _find_investigation(s, ref)
         inv_id, inv_name = inv.id, inv.name
@@ -383,6 +391,7 @@ def _run(ref: str, force_reclaim: bool = False, retry_failed: bool = False,
                   f"{summary.retried} retried, {summary.failed} failed  {summary.by_type}")
     if post and summary.done:
         _post_run(a, inv_id)
+    lock.release()                  # also released if the process dies: Postgres drops it
     status(str(inv_id))
 
 

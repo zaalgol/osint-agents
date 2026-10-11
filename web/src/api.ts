@@ -83,6 +83,7 @@ export interface InvestigationStatus {
   knowledge: Counts;
   failed: { id: number; type: string; plugin: string; error: string; attempts: number }[];
   schedule: Schedule | null;
+  runner: string | null;          // who processes the queue now (GUI job or a terminal run)
 }
 
 export interface Job {

@@ -152,3 +152,56 @@ def active(session: Session, investigation_id: int, types: list[str],
 def has_open_work(session: Session, investigation_id: int) -> bool:
     return bool(session.scalar(select(func.count()).where(
         Task.investigation_id == investigation_id, Task.status.in_(["pending", "running"]))))
+
+
+# ---------------------------------------------------------------------- one runner per queue
+
+RUNNER_LOCK = 4242                    # advisory-lock class id; the object id is the investigation
+
+
+class RunnerLock:
+    """At most one runner per investigation, across processes (CLI, GUI jobs, daemon).
+
+    A session-level Postgres advisory lock on a dedicated connection. Postgres drops it
+    when the connection closes, so a crashed or killed runner never blocks the queue.
+    Two runners would double GPU and RAM use, and `resume` reclaims running tasks,
+    which would steal the other runner's work.
+    """
+
+    def __init__(self, session_factory, investigation_id: int) -> None:
+        self.engine = session_factory.kw["bind"]
+        self.inv_id = investigation_id
+        self.conn = None
+
+    def acquire(self) -> str | None:
+        """None if we hold the lock now; otherwise who holds it."""
+        conn = self.engine.connect()
+        conn.execute(text("SELECT set_config('application_name', :n, false)"),
+                     {"n": f"osint runner pid {os.getpid()}"})
+        got = conn.scalar(text("SELECT pg_try_advisory_lock(:c, :i)"),
+                          {"c": RUNNER_LOCK, "i": self.inv_id})
+        conn.commit()                 # the lock is session-level: it outlives the transaction
+        if got:
+            self.conn = conn
+            return None
+        holder = runner_holder(conn, self.inv_id) or "another process"
+        conn.close()
+        return holder
+
+    def release(self) -> None:
+        if self.conn is not None:
+            self.conn.execute(text("SELECT pg_advisory_unlock(:c, :i)"),
+                              {"c": RUNNER_LOCK, "i": self.inv_id})
+            self.conn.commit()
+            self.conn.close()
+            self.conn = None
+
+
+def runner_holder(session_or_conn, investigation_id: int) -> str | None:
+    """Who is processing this investigation's queue right now (None if nobody)."""
+    return session_or_conn.scalar(text("""
+        SELECT coalesce(nullif(a.application_name, ''), 'pid ' || l.pid)
+        FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.locktype = 'advisory' AND l.classid = :c AND l.objid = :i
+          AND l.objsubid = 2 AND l.granted
+        LIMIT 1"""), {"c": RUNNER_LOCK, "i": investigation_id})

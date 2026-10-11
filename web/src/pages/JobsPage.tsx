@@ -70,6 +70,13 @@ export function JobPage() {
             </div>
             {j.status === "running" && <button className="danger" onClick={() => cancel.mutate()} disabled={cancel.isPending}>Cancel (pause)</button>}
           </div>
+          {j.status === "lost" && (
+            <div className="card muted small">
+              The GUI was restarted (or stopped) while this job ran, so it can no longer follow it. The log below ends where
+              the GUI stopped watching. Everything it finished is saved; unfinished tasks go back to the queue.
+              {j.investigation_id && <> Check the investigation's <Link to={`/inv/${j.investigation_id}`}>Overview</Link>, and press Run there to continue if nothing else is processing it.</>}
+            </div>
+          )}
           <div ref={logRef} className="log">{j.log || "(no output yet)"}</div>
         </div>
       )}
