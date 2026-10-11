@@ -1,6 +1,6 @@
 """PostgreSQL schema (SQLAlchemy 2.0 ORM): the system of record.
 
-Design rules (plan.md sections 5 and 8):
+Design rules (CLAUDE.md, "Data model and invariants"):
   * Entities are global; investigations reference them (investigation_ref).
   * Raw evidence (artifact, capture) is immutable. custody_log is append-only and
     hash-chained. Both are enforced by DB triggers (see the migrations).

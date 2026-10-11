@@ -1,454 +1,555 @@
 # osint-agents
 
-An agent-based OSINT system. Local LLM agents (Ollama on the GPU) collect and extract.
-Claude Code CLI does the analysis. A persistent knowledge base links investigations to
-each other, and every claim is backed by a citation and preserved, verifiable evidence.
+An OSINT workbench for investigating threats, groups and networks from open sources:
 
-See [plan.md](plan.md) for the full design.
+- **Local AI models on your GPU** search the web, capture pages, read documents in many
+  languages, and pull out who did what, when and where.
+- **Claude** (through Claude Code, on your Max subscription) analyses what was found,
+  writes findings and threat assessments, and produces reports.
+- **Everything is kept** in one knowledge base, so you can pause an investigation and
+  continue days later. A new investigation automatically shows its connections to
+  earlier ones.
+- **Every statement can be proven.** Each claim cites a verbatim quote, and each quote
+  points to a preserved, hash-verified, timestamped copy of the source.
 
-## Status
+You use it through a **web GUI** (recommended) or the **`osint` command line**. Both do
+the same things.
 
-- **Phase 0 (foundations) is done:** config, domain models, ontology, plugin registry,
-  the PostgreSQL schema with proof-enforcing triggers, the content-addressed raw store,
-  the hash-chained custody log, and Docker services.
-- **Phase 1 (vertical slice) is done:** a durable task queue with resume, SearXNG/web/RSS
-  collectors with proof capture (raw + WARC + screenshot/PDF/rendered DOM), parsing,
-  local-LLM extraction with schema-constrained output and verbatim-quote verification,
-  basic entity resolution, and `new / run / resume / status / entity / review`.
-- **Phase 2 (Claude analyst) is done:** an `osint` MCP server over the knowledge base,
-  headless `claude -p` jobs (plan, analyze, report, citation audit, ask) with a usage
-  ledger and result cache, findings that require proof, the `verify-report` citation gate
-  (marker resolution, uncited sentences, LLM support check, evidence hash re-check) and
-  footnoted Markdown/HTML reports.
-- **Phase 3 (persistence and linking) is done:**
-  - bge-m3 embeddings
-  - fuzzy entity resolution (transliteration, embeddings, local-LLM judge, reversible merges)
-  - corroboration (independent-source counting, contradiction detection)
-  - cross-investigation links (hard and soft candidates, confirmed with proof by Claude)
-  - Neo4j projection with graph tools (paths, key players, read-only Cypher)
-  - refresh, schedules and a daemon, plus snapshots
-  - evidence sealing (Merkle manifests, Ed25519, RFC 3161 and OpenTimestamps) and
-    independently verifiable evidence bundles
-- **Phase 4 (breadth) is done, with no-account sources only:**
-  - collectors: public Telegram channels (`t.me/s` preview), Wayback Machine, GDELT news,
-    YouTube metadata and captions
-  - enrichers: RDAP/DNS, OpenStreetMap geocoding, Bitcoin activity, and UN and OFAC
-    sanctions screening
-  - exporters: STIX 2.1, FollowTheMoney, GEXF
-  - a local web UI
-  - direct connections with automatic VPN fallback when a site blocks us
-  - a guard that refuses account-based sources
-- **Phase 5 (quality) is done:**
-  - same-incident clustering (several reports of one incident become one corroborated
-    incident)
-  - an extraction eval harness with a multilingual gold set (`osint eval extraction`)
-  - live quality metrics (`osint eval health`, `osint eval reports`)
-  - a review workflow in the UI and the CLI (`osint decide`, `osint decide-link`)
-  - a daily integrity check in the daemon
-- **Since then:**
-  - stance-aware extraction: denied and speculative relations become cited *claims*,
-    not graph facts
-  - English translations stored next to non-English quotes
-  - Whisper transcription for videos without captions (`--extra media`)
-  - face redaction for shared bundles (`osint evidence bundle --redact-faces`)
-  - network ladder: direct, then Cloudflare WARP (with DoH), then a real browser; plus an
-    **anonymous profile** that sends everything through Tor (`--anonymous`)
-  - images and scanned PDFs: EXIF + OCR with the local vision model; Telegram post photos
-    are captured
-  - paste sites (`paste` collector); EU and UK sanctions lists
-  - Admiralty codes (source reliability + information credibility) on every citation
-  - contamination handling: hash blocklists and `osint evidence purge`
+> Developers: architecture and code notes are in [CLAUDE.md](CLAUDE.md).
 
-## Setup (Windows)
+---
+
+## Contents
+
+1. [Setup](#1-setup)
+2. [Starting the system](#2-starting-the-system)
+3. [Your first investigation](#3-your-first-investigation)
+4. [Collecting: where data comes from](#4-collecting-where-data-comes-from)
+5. [Network and anonymity](#5-network-and-anonymity)
+6. [Reading the results](#6-reading-the-results)
+7. [Analysis and reports with Claude](#7-analysis-and-reports-with-claude)
+8. [The review queue](#8-the-review-queue)
+9. [Evidence: proof, sharing and safety](#9-evidence-proof-sharing-and-safety)
+10. [Keeping investigations up to date](#10-keeping-investigations-up-to-date)
+11. [Maintenance and limits](#11-maintenance-and-limits)
+12. [Command reference](#12-command-reference)
+13. [Troubleshooting](#13-troubleshooting)
+
+---
+
+## 1. Setup
+
+You need:
+- Windows 11
+- Docker Desktop
+- [Ollama](https://ollama.com)
+- [uv](https://docs.astral.sh/uv/)
+- the Claude Code CLI, logged in to your subscription
+- an NVIDIA GPU with 16 GB of memory
 
 ```powershell
-# 1. services: postgres+pgvector, neo4j, searxng
-copy .env.example .env          # then edit passwords
+# 1. Services: database, graph database, search engine
+copy .env.example .env               # then change the passwords in .env
 docker compose up -d
 
-# 2. local models
-ollama pull huihui_ai/qwen3-abliterated:14b
-ollama pull bge-m3
+# 2. Local AI models
+ollama pull huihui_ai/qwen3-abliterated:14b    # main worker
+ollama pull qwen3.6:27b                        # accurate mode + reading images (OCR)
+ollama pull bge-m3                             # similarity search
 
-# 3. python env + DB schema
-uv sync --extra dev
-uv run python -m osint init               # migrations, Neo4j constraints, data dirs
-uv run python -m osint doctor             # check every dependency
+# 3. The program and its database
+uv sync --extra dev --extra media
+uv run python -m osint init
+uv run python -m osint doctor        # checks that everything above works
 ```
 
-> **Windows Application Control note:** on this machine, policy blocks the `.exe`
-> launchers that uv generates (`osint.exe`, `alembic.exe`). Always use
-> `uv run python -m osint ...` and `uv run python -m alembic ...`.
+> On this machine, Windows Application Control blocks the small `.exe` launchers.
+> Always start commands with `uv run python -m osint ...`, never `osint.exe`.
 
-## Quick start
+Optional:
+- **VPN for blocked sites:** Cloudflare WARP, see [section 5](#5-network-and-anonymity).
+- **Tor for anonymous investigations:** see [section 5](#5-network-and-anonymity).
 
-Let Claude plan, collect, analyse and report:
-
-```powershell
-uv run python -m osint new "redsea" --focus "Houthi attacks on Red Sea shipping since 2025: actors, targets, claims" --plan --run
-uv run python -m osint analyze redsea          # findings with proof ([F:n])
-uv run python -m osint run redsea              # collect what the analyst asked for
-uv run python -m osint assess redsea           # threat assessment (capability/intent/indicators)
-uv run python -m osint red-team redsea         # challenge the findings before reporting
-uv run python -m osint report redsea           # report, citation gate, MD + HTML
-uv run python -m osint ask redsea "Which vessels were hit in 2026?"
-uv run python -m osint explain 12              # proof tree of finding F:12
-```
-
-Or drive collection yourself:
+## 2. Starting the system
 
 ```powershell
-uv run python -m osint new "redsea" --focus "Houthi attacks on shipping" `
-    -q "Houthi attack ship Red Sea" -q "Houthi claim tanker" --max-results 10 --run
-uv run python -m osint status redsea
-uv run python -m osint entity "Houthi"          # what we know, with cited quotes
-uv run python -m osint review redsea            # what was rejected and why
-# Ctrl+C at any time, then:
-uv run python -m osint resume redsea
-```
-
-## Web GUI
-
-```powershell
+docker compose up -d                 # if the services aren't running
 uv run python -m osint ui            # opens http://127.0.0.1:8765
 ```
 
-A React app for everything the CLI does:
+The GUI only accepts connections from your own computer. Close the terminal to stop it.
+Jobs it started keep running and show up as "lost" after a restart. Their results are
+saved anyway.
 
-- **Investigations:**
-  - create one (focus, queries, URLs, feeds; Claude planning; anonymous/Tor)
-  - archive one
-  - see knowledge counts, the task queue and failed tasks
-- **Collect:**
-  - every collector gets a form generated from its parameter schema, so plugins added
-    later get a UI with no extra code
-  - upload your own files as evidence (hashed, custody-logged, OCR/EXIF for images and
-    scanned PDFs)
-- **Graph:**
-  - entities and relations, coloured by type, with type filters and search
-  - optional "mentions" and event co-participation links
-  - click a node to open the entity
-- **Entities, Timeline, Evidence:**
-  - every citation shows the verbatim quote, translation, its Admiralty code, and a
-    machine-read warning for OCR/transcripts
-  - captured pages are served inert (no scripts)
-  - screenshots and WARCs open from the evidence table
-- **Findings:** proof trees down to the preserved quotes, contradictions, and revisions.
-- **Connections:** cross-investigation links, shared entities, key players and communities.
-- **Ask Claude**, **Reports and export:**
-  - Q&A, reports (rendered sandboxed), evidence bundles (optional face blurring)
-  - STIX/FtM/GEXF export with download links
-- **Review:** decide sanctions matches, merges, contradictions and revisions; bulk-dismiss
-  dismiss-only items.
-- **Sources and grading:** set Admiralty reliability A-F per source.
-- **Jobs:** long operations run as background `osint` processes with a live log.
-  - "Cancel" pauses a run like Ctrl+C: in-flight tasks go back to the queue.
-  - Only one queue-processing job runs per investigation at a time.
-- **System:** health checks (same as `osint doctor`), Tor start/stop, verify/seal/snapshot,
-  run due schedules, plugin list.
+**GUI map:**
 
-**Security:**
-- the server binds to 127.0.0.1 only
-- every write needs a per-server CSRF token and a localhost Origin
-- jobs are a fixed whitelist of `osint` commands, run without a shell
-- a strict Content-Security-Policy applies
+| Page | What it's for |
+|---|---|
+| **Dashboard** | All investigations with their progress, failures and open review items. "New investigation". |
+| **Investigation** | One tab each: Overview, Collect, Graph, Entities, Timeline, Evidence, Findings, Connections, Ask Claude, Reports & export, Review |
+| **Search** | Find a person, group, place or identifier across all investigations |
+| **Review** | Everything waiting for a human decision |
+| **Sources** | Grade how reliable each source is (A–F) |
+| **Jobs** | Long-running operations with a live log; cancel/pause |
+| **System** | Health checks, Tor on/off, evidence verification, backups, plugin list |
 
-**Developing the GUI** (`web/`, Vite + React + TypeScript): the built files are committed
-in `src/osint/ui/static/`, so Node.js is only needed to change the GUI:
+## 3. Your first investigation
+
+### In the GUI
+
+1. On the **Dashboard**, click **New investigation**.
+2. Give it a short name and a **focus**: one or two sentences on what you want to know,
+   e.g. *"Houthi attacks on Red Sea shipping since 2025: actors, targets, claims"*.
+3. Choose how to start:
+   - **Let Claude plan it.** Claude writes the key questions and queues searches in
+     several languages.
+   - **Or** enter search queries, URLs and RSS feeds yourself.
+4. Tick **Anonymous (Tor)** if the target must not see your IP (see
+   [section 5](#5-network-and-anonymity)).
+5. Tick **Run now** and create it.
+
+The run collects pages, reads them and extracts entities. Follow it on the **Jobs** page
+or the investigation's **Overview** tab. A first run with ~10 results per query takes
+from a few minutes to an hour, depending on how many pages are found.
+
+Then:
+- **Graph** and **Entities**: who and what was found.
+- **Analyze** (on the Overview or Findings tab): Claude's analysis.
+- **Report** (on the Overview tab): a cited report. It appears under Reports & export.
+
+### On the command line
+
+Let Claude plan and run it:
 
 ```powershell
-$env:Path = "$env:LOCALAPPDATA/osint-node/node-v24.21.0-win-x64;$env:Path"   # portable Node LTS
-cd web; npm install; npm run dev      # http://localhost:5173, API proxied to `osint ui --no-open`
-npm run build                         # type-check + build into src/osint/ui/static
+uv run python -m osint new redsea --focus "Houthi attacks on Red Sea shipping since 2025: actors, targets, claims" --plan --run
 ```
 
-Node.js 24 LTS was installed portably (checksum and release-key signature verified) in
-`%LOCALAPPDATA%\osint-node`. npm dependencies are pinned to exact versions that were at
-least two weeks old at install time.
+Or choose the queries yourself:
 
-## CLI
+```powershell
+uv run python -m osint new redsea --focus "Houthi attacks on shipping" `
+    -q "Houthi attack ship Red Sea" -q "Houthi claim tanker" --max-results 10 --run
+```
 
-| Command | What it does |
-|---|---|
-| `osint new <name> -q/-u/-f ...` | Create an investigation from queries, URLs and feeds |
-| `osint run <inv>` | Process the queue: collect, then parse, then extract |
-| `osint resume <inv>` | Continue after Ctrl+C or a crash (`--retry-failed` re-queues failures) |
-| `osint status [<inv>]` | List investigations, or show one's tasks and knowledge counts |
-| `osint entity <name>` | Show an entity across investigations with relations, events and citations |
-| `osint review [<inv>] [--recheck]` | Show rejected extractions and resolution candidates; `--recheck` re-verifies rejected quotes |
-| `osint plan <inv>` | Claude writes key questions and queues multilingual collection |
-| `osint analyze <inv>` | Claude records findings (facts, patterns, assessments, gaps) with proof |
-| `osint report <inv>` | Claude writes the report; the citation gate checks it (auto-audit on failure); renders MD + HTML |
-| `osint assess <inv>` | Claude threat assessment: capability, intent, opportunity, likelihood/impact, indicators & warnings |
-| `osint red-team <inv>` | Claude challenges the findings (ACH, alternative hypotheses, gaps); run it before a final report |
-| `osint revise <F> --confidence 0.3 --reason ...` / `--withdraw` | Revise or withdraw a finding (history kept). Claude's downgrades apply; its upgrades and withdrawals wait in Review |
-| `osint apply-red-team <job>` | Turn a red-team job's suggested confidences into revisions |
-| `osint report-verify <id>` | Re-run the citation gate and list every problem sentence |
-| `osint report-override <id> --reason` | Release a report that failed the gate (recorded on the report) |
-| `osint ask <inv> "<question>"` | Read-only Q&A over the knowledge base, with citations |
-| `osint findings <inv>` / `osint explain <id>` | List findings / show a finding's proof tree down to the quotes |
-| `osint er [<inv>] [--dry-run]` / `osint merges` / `osint er-undo <id>` | Fuzzy entity resolution; list or undo merges |
-| `osint corroborate [<inv>]` | Independent-source counts per fact; contradiction detection |
-| `osint link [<inv>]` / `osint links <inv>` | Cross-investigation link candidates; with `<inv>`, Claude confirms or rejects them with proof |
-| `osint graph-sync` / `osint key-players [<inv>]` | Rebuild the Neo4j projection; network brokers and communities |
-| `osint refresh <inv> [--since week]` | Re-run searches and feeds for new material |
-| `osint schedule <inv> --every 6h [--analyze]` / `osint daemon [--once]` | Recurring refresh (+ optional Claude analysis) |
-| `osint reextract <inv> [--role agent_heavy]` | Re-run extraction on existing documents with the accurate model (merges into the knowledge) |
-| `osint run <inv> --extract-role agent_heavy` | One run with the accurate extraction model |
-| `osint schedule <inv> --every 1d --extract-role agent_heavy` | Nightly refresh with the accurate model (fast model stays the interactive default) |
-| `osint snapshot` | pg_dump + raw evidence + manifests + config, with checksums |
-| `osint evidence seal` | Merkle manifest + Ed25519 signature + RFC 3161/OpenTimestamps (runs after every `run`) |
-| `osint evidence bundle <inv> [--report N]` | Export a zip with the cited evidence, proofs and a standalone `verify.py` |
-| `osint collect <inv> <plugin> '<json>'` | Queue any collector, e.g. `telegram_public '{"channels": ["somechannel"]}'` |
-| `osint enrich <inv> [--enrichers rdap,geocode,btc,sanctions]` | Enrich entities with outside sources (proof captured, quotes verified) |
-| `osint export <inv> --format stix,ftm,gexf` | STIX 2.1 / FollowTheMoney / Gephi |
-| `osint ui` | Web GUI on http://127.0.0.1:8765: everything below, point and click (see **Web GUI**) |
-| `osint archive <inv> [--undo]` | Hide an investigation and stop its schedule (nothing is deleted) |
-| `osint retract <rel> --reason` / `osint unretract <rel>` | Retract a wrong relation (kept on record, hidden from analysis/exports) |
-| `osint retract-citation <E> --reason` | Retract one wrong citation; reports citing it fail the gate |
-| `osint cleanup` | Retract LLM-made relations of enrichment-only types |
-| `osint eval extraction [--model TAG]` / `osint eval history` | Score a local model on the gold set (P/R/F1, quote accuracy); compare runs |
-| `osint eval health [<inv>]` / `osint eval reports` | Live metrics: rejection and hallucinated-quote rates, corroboration, report citation coverage and precision |
-| `osint decide <review-id> accept\|reject [--note]` | Decide a review item (merge, confirm a listing, acknowledge, dismiss) |
-| `osint decide-link <link-id> confirm\|reject` | Human decision on a cross-investigation link (cites both sides) |
-| `osint new <name> ... --anonymous` / `osint network <inv> [standard\|anonymous]` | Anonymous profile: all of the investigation's traffic through Tor |
-| `osint tor start\|stop\|status` | Local Tor client; `status` confirms traffic exits via Tor |
-| `osint init` | Apply DB migrations, create Neo4j constraints and data directories |
-| `osint doctor` | Check Postgres, pgvector, Neo4j, SearXNG, Ollama models, the Claude CLI and the GPU |
-| `osint plugins` | List discovered plugins |
-| `osint ontology` | Show entity, relation and event types |
-| `osint evidence add <file>` | Ingest a file as evidence (hashes, capture, custody entry) |
-| `osint evidence verify` | Re-hash all stored evidence and verify the custody chain |
-| `osint evidence purge <artifact-id> --reason ...` | Hard-delete contaminated content (files, text, quotes), blocklist its hashes; custody-logged |
-| `osint evidence blocklist` | Count the loaded content blocklists |
-| `osint sources [<inv>] [--backfill]` / `osint grade <source> A-F --note ...` | Sources (website, Telegram/YouTube channel, paste site, list) and their Admiralty reliability |
+Then look at the results and analyse:
 
-### Quality loop
+```powershell
+uv run python -m osint status redsea             # progress and counts
+uv run python -m osint entity "Houthi"           # what is known, with quotes
+uv run python -m osint analyze redsea            # Claude's findings
+uv run python -m osint report redsea             # cited report (Markdown + HTML)
+```
 
-1. `osint eval extraction --model <tag>` scores a model on `evals/extraction/gold.jsonl`
-   (8 fictional, hand-annotated documents in EN/AR/RU/FR, including traps: an irrelevant
-   text, a denial that must not become a relation, a meeting that isn't a relation). Add
-   your own documents to the file to grow the set.
-2. `osint eval health <inv>` shows how often the gatekeepers fire on real data. A high
-   `quote_not_found` rate means the model invents quotes, a high `weak_citation` rate
-   means it cites names instead of statements.
-3. The **Review** tab in `osint ui` (or `osint decide`) handles what the machines
-   couldn't: merges, sanctions confirmations, contradictions, link candidates. Rejected
-   extractions can only be dismissed, never voted into facts.
-4. `osint daemon` re-verifies all evidence daily (`integrity_alert` on any problem).
+**Pausing:** press Ctrl+C at any time, or click **Cancel** on the Jobs page. Unfinished
+work goes back in the queue. To continue, run `osint resume redsea` or click **Run**
+again. **Retry failed** also re-queues tasks that failed.
 
-### Resource limits (32 GB machine)
+## 4. Collecting: where data comes from
 
-Workers stop claiming new tasks when free RAM drops below `concurrency.min_free_ram_gb`
-(running tasks finish), and Chromium screenshot pages are capped by
-`concurrency.browser_pages`. Ollama unloads the 27B model one minute after its last use
-(`keep_alive` per role in `models.yaml`). Ollama's runner process (`llama-server`) keeps
-growing in system RAM during long runs (measured: +9 GB in about 30 minutes) even with
-the model fully on the GPU. When available RAM drops below
-`concurrency.recycle_llm_below_gb`, the runner unloads the models, which frees that memory
-at once, and the next request reloads them.
-
-### Claims vs facts
-
-The extractor labels each relation's stance: `asserted`, `reported` ("police said"),
-`denied`, or `speculative` ("may", "suspected"). Asserted and reported relations become
-graph facts (reported ones keep `stance: reported`). Denied and speculative ones are
-stored as cited **claims**: "Officials denied the Brigade had any link to X" is kept
-as evidence of a denial, not as a link. Claude sees them separately
-(`claims_not_facts` in `get_entity`).
-
-### Media (optional: `uv sync --extra dev --extra media`)
-
-- **Whisper:** a YouTube video without captions gets its audio stored as evidence and
-  transcribed (faster-whisper; `media.*` in settings). Audio is decoded by Playwright's
-  Chromium, because the usual decoder (PyAV) is blocked by Windows Application Control
-  here. It runs on the GPU if NVIDIA's cuBLAS/cuDNN libraries load, otherwise on CPU
-  (about 0.5x real time). Transcripts are labelled as machine transcription.
-- **Images and scanned PDFs:** images get their EXIF read (camera, original time, GPS).
-  EXIF with a GPS position or camera details opens a `media_metadata` review item, since
-  it's a lead and can identify people. Text in images and in PDFs without a text layer is
-  transcribed by the `vision` role (`qwen3.6:27b`; in a live test it read
-  English/Arabic/Russian exactly, ~25 s per page). Those documents have parser `ocr:...`
-  and `meta.ocr.machine_read = true`. A model can misread, so check quotes against the
-  image. `media.ocr: false` turns it off.
-- **Face redaction:** `osint evidence bundle <inv> --redact-faces` blurs faces in
-  screenshots (OpenCV YuNet, model hash-pinned), drops PDF/DOM/media captures that can't
-  be redacted, and records each redacted file's original hash. Detection isn't perfect:
-  look at the bundle before sharing it.
-- **OPSEC note:** screenshots taken over a direct connection can show your approximate
-  location, because sites localize by IP (e.g. a weather/location widget in a news
-  header). Use the VPN route or redact before sharing.
-
-**Sanctions screening** covers the UN, OFAC, EU and UK lists. A match becomes a fact
-(`designated_by`, citing the verbatim list entry) only for organizations with a specific,
-unambiguous name, matched on the entry's primary name or on two of its names. These become
-`sanctions_match` review items for an analyst instead:
-- people
-- single-word names
-- names shared by different listed parties ("Ansar Allah" is also a Hizballah alias)
-- a match on one alias only ("Islamic Jihad" is an OFAC alias of Hizballah)
-
-The same party on several lists counts as one party.
-
-### Admiralty grading
-
-Every capture is assigned a source automatically: a website by host (Wayback copies count
-for the original site), a Telegram or YouTube channel, a paste site, or an enrichment
-service. Each citation shows an Admiralty code like **B1**:
-
-- **Letter, source reliability:** you set it with `osint grade reuters.com B --note "..."`.
-  Unknown sources stay **F** ("cannot be judged"). Sanctions-list enrichment starts at
-  A, RDAP and blockchain lookups at B, geocoding at C.
-- **Digit, information credibility:** computed from corroboration:
-  - **1:** two or more independent origins
-  - **4:** contradicted by another source
-  - **6:** otherwise ("cannot be judged")
-
-  Claims keep the credibility recorded on them. Grades 2, 3 and 5 need an analyst.
-
-Claude's `get_evidence` returns both, so the analysis can weigh them.
-
-### Contamination: blocklists and purge
-
-Extremist sources can carry CSAM or malware.
-
-- **Blocklists:** put hash lists in `data/blocklists/*.txt`. One md5, sha1 or sha256 per
-  line; `#` starts a comment. Content matching a list is refused before it's written,
-  including screenshots, PDFs and WARCs. Only the URL, hash and list name go into the
-  custody log as `blocked`. Lists reload when the files change.
-- **Exact hashes only:** a re-encoded image won't match.
-- **Purge:** `osint evidence purge <id> --reason "..."` permanently deletes an artifact's
-  files. It also blanks its document text, translations, embeddings and quotes, and adds
-  the hashes to `data/blocklists/purged.txt`. The custody log records the hashes and the
-  reason, never content. The record and ids stay. Report citations to it fail the gate,
-  bundles list it as excluded, and integrity checks expect the files to be missing.
-- **Legal duty:** if you encounter CSAM, report it to your national hotline (INHOPE
-  member, e.g. NCMEC/IWF) as the law requires. Don't keep copies.
-
-### Sources (all public, no account or ID)
-
-| Collector | Params example |
-|---|---|
-| `searxng` | `{"queries": ["..."], "language": "ar", "time_range": "month"}` |
-| `web` | `{"urls": ["https://..."]}` |
-| `rss` | `{"feeds": ["https://.../rss"]}` |
-| `telegram_public` | `{"channels": ["name", "https://t.me/name"], "max_posts": 200, "since": "2026-01-01", "photos": 4}` (photos are captured and OCRed) |
-| `paste` | `{"urls": ["https://pastebin.com/xxxx"], "queries": ["..."]}`: page + raw text; queries search Pastebin/Rentry/JustPaste.it/ControlC/paste.ee via SearXNG |
-| `wayback` | `{"urls": ["example.org/page"], "mode": "spread", "max_snapshots": 5}` |
-| `gdelt` | `{"queries": ["houthi sourcelang:arabic"], "timespan": "1w"}` |
-| `youtube` | `{"urls": ["https://www.youtube.com/@channel"], "max_videos": 20}` |
-
-Collectors that would need your own account (Telegram API, Reddit API, ACLED, ...)
-are refused unless `collection.allow_account_sources: true`, and Claude can't request
+Every source here is public and needs **no account or ID**. Sources that would need your
+account (the Telegram API, Reddit API, ACLED, …) are refused, and Claude can't request
 them either.
 
-### Network: direct first, VPN when blocked
+**In the GUI:** the **Collect** tab shows a form for each source.
+**On the command line:** run `osint collect <inv> <source> '<json>'`, then `osint run <inv>`.
 
-Each page is fetched down this ladder, stopping at the first that works:
+| Source | What it collects | Example parameters |
+|---|---|---|
+| `searxng` | Web search (many engines) | `{"queries": ["..."], "language": "ar", "time_range": "month"}` |
+| `web` | Specific pages | `{"urls": ["https://..."]}` |
+| `rss` | News feeds | `{"feeds": ["https://.../rss"]}` |
+| `telegram_public` | Public Telegram channels via the `t.me/s` preview, including photos (read with OCR) | `{"channels": ["name"], "max_posts": 200, "since": "2026-01-01", "photos": 4}` |
+| `paste` | Paste sites: Pastebin, Rentry, JustPaste.it, ControlC, paste.ee | `{"urls": ["https://pastebin.com/xxxx"], "queries": ["..."]}` |
+| `wayback` | Old copies from the Internet Archive | `{"urls": ["example.org/page"], "mode": "spread", "max_snapshots": 5}` |
+| `gdelt` | Global news monitoring | `{"queries": ["houthi sourcelang:arabic"], "timespan": "1w"}` |
+| `youtube` | Video details and captions; transcribed when there are no captions | `{"urls": ["https://www.youtube.com/@channel"], "max_videos": 20}` |
 
-1. **Direct HTTP**, your normal connection.
-2. **VPN HTTP**, used when the direct route is blocked (HTTP 401/403/429/451/503, a
-   captcha/challenge page) or refused. Names are resolved with DNS-over-HTTPS *through
-   the VPN* (`network.vpn_doh`), which gets past DNS-level blocks while TLS is still
-   verified for the real hostname. A host that blocked direct stays on the VPN for the
-   run.
-3. **Real browser** (Chromium, through the VPN), for sites that refuse any non-browser
-   client. The browser's main-document response becomes the evidence (WARC, screenshot,
-   PDF, DOM).
+**Your own files:** use **Collect → Upload**, or `osint evidence add <file>` on the
+command line. Uploaded files are stored as evidence like everything else. Images and
+scanned PDFs are read with OCR, and their EXIF metadata (camera, time, GPS) is extracted.
 
-Every capture records its route and the earlier attempts. Some sites (bot managers like
-Akamai) also reject headless browsers. They stay recorded as blocked, and the system does
-not try to solve captchas or impersonate a person.
+**Enrichment** adds facts from reference services. In the GUI it's on the **Overview**
+tab; on the command line it's `osint enrich <inv>`.
 
-**VPN in use: Cloudflare WARP, proxy mode** (free, no account). Only the fallback goes
-through it; your normal traffic doesn't. Setup, already done on this machine:
+| Enricher | What it adds |
+|---|---|
+| `rdap` | Domain and IP registration, DNS |
+| `geocode` | Coordinates for places (OpenStreetMap) |
+| `btc` | Bitcoin wallet activity |
+| `sanctions` | Checks against the UN, US (OFAC), EU and UK sanctions lists |
+
+A sanctions match is recorded as a fact only when it's unambiguous: an organization with
+a specific name that matches the list entry's main name. Everything else goes to the
+review queue for your decision:
+
+- people
+- one-word names
+- names shared by several listed groups
+- matches on a single alias
+
+**Better extraction:** the default model is fast. For important material, re-read it
+with the larger, more accurate model:
+- **GUI:** Overview → Re-extract.
+- **Command line:** `osint reextract <inv> --role agent_heavy`.
+
+## 5. Network and anonymity
+
+Each investigation uses one of two network profiles. To change it, use the network
+switch on the **Overview** tab, or run `osint network <inv> standard|anonymous`.
+
+### Standard: direct first, VPN when blocked
+
+Every page is fetched over your normal connection. If the site blocks it (403/429/
+captcha), the fetch is retried through the VPN. If that fails too, a real browser tries
+through the VPN. The evidence records which route was used.
+
+The VPN is **Cloudflare WARP** in proxy mode: it's free, needs no account, and only the
+fallback traffic goes through it. One-time setup:
 
 ```powershell
 winget install --id Cloudflare.Warp
 $w = "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
 & $w --accept-tos registration new
-& $w --accept-tos mode proxy          # BEFORE connecting: never take over the whole machine
+& $w --accept-tos mode proxy          # BEFORE connecting, so it never takes over your whole PC
 & $w --accept-tos proxy port 40000
 & $w --accept-tos connect
 ```
 
-`network.vpn_proxy: socks5://127.0.0.1:40000`. WARP hides your IP from sites but exits
-in your own country, and Cloudflare knows it's you, so it isn't anonymity. For
-anonymity-critical collection, use the anonymous profile below.
+WARP hides your IP from websites, but it isn't anonymity: Cloudflare knows it's you, and
+you exit in your own country.
 
-### Anonymous profile: Tor only
+### Anonymous: Tor only
 
-For hostile sources where your identity matters, mark the investigation anonymous:
+Use this for hostile sources where your identity matters:
 
 ```powershell
-uv run python -m osint tor start                  # background Tor; verifies via check.torproject.org
-docker compose up -d searxng-tor                  # SearXNG whose engine queries go through Tor
-uv run python -m osint new "x" -q "..." --anonymous --run
-uv run python -m osint network x anonymous        # or switch an existing investigation
+uv run python -m osint tor start                 # or System → Tor → Start in the GUI
+docker compose up -d searxng-tor                 # search engine whose queries also go via Tor
+uv run python -m osint new x -q "..." --anonymous --run
 ```
 
-- **Everything goes through Tor:** page fetches, Chromium screenshots and the browser
-  fallback, yt-dlp, enrichers and timestamping. Search-engine queries go out via
-  `searxng-tor` (port 8889). It's a second SearXNG container with
-  `socks5h://host.docker.internal:9050`, so engine names resolve inside Tor too. There's
-  no direct attempt and no WARP fallback. DNS is resolved at the Tor exit.
-- **Fails closed:** if Tor isn't working, the run refuses to start. `tor.auto_start`
-  tries to start it first. Only loopback services (our own SearXNG) skip the proxy, and a
-  loopback response that redirects off-host is refused.
-- **Separate circuits:** each investigation uses its own SOCKS credentials
-  (`IsolateSOCKSAuth`), so exits can't link investigations. Chromium can't send SOCKS
-  credentials, so it uses its own port (9052, `IsolateDestAddr`): one circuit per site.
-  WebRTC is limited to proxied UDP, so pages can't learn your real IP.
-- **Evidence records it:** captures are labelled route `proxy` (or `browser+proxy`) with
-  the Tor SOCKS URL in `capture_meta.proxy`.
-- **Tor itself:** the official Tor Expert Bundle, GPG-verified (Tor Browser Developers key
-  `EF6E 286D DA85 EA2A 4BA7 DE68 4E2C 6E87 9329 8290`), lives in
-  `%LOCALAPPDATA%/osint-tor/`, outside the repo. Upgrade it by downloading a new bundle,
-  verifying its `.asc`, extracting it next to the old one and pointing `tor.binary` at it.
-- **Limits:**
-  - many sites and some search engines (Google, Brave, DuckDuckGo) block or captcha
-    Tor exits, so expect fewer results
-  - Claude and Ollama run locally or on Anthropic's API and never touch the targets
-  - Tor hides *where* you are, not *what* you do: don't log in or reuse identifiers
+- **Everything** goes through Tor: page fetches, screenshots, video downloads,
+  enrichment and search queries.
+- **Fails safe:** if Tor isn't working, the investigation refuses to run rather than
+  connecting directly.
+- **Each investigation gets its own Tor circuits,** so sites can't link your
+  investigations to each other.
+- **Expect fewer results:** many sites and some search engines block Tor.
+- **Tor hides where you are, not what you do.** Never log in or reuse identifiers.
 
-After every `run`, a post-run step computes embeddings, updates corroboration,
-generates link candidates, syncs the graph and seals new custody entries.
+> Screenshots taken over a direct connection can reveal your location, since sites show
+> local weather or a city name. Use the VPN or Tor, or redact screenshots before
+> sharing.
 
-**Windows Task Scheduler** (refresh every hour without a terminal open):
+## 6. Reading the results
+
+### Entities, relations, events
+
+The local model extracts:
+- **entities:** people, groups, places, vessels, wallets, domains, …
+- **relations:** e.g. *member of*, *funded by*, *attacked*
+- **events:** e.g. an attack, a statement, a meeting
+
+Each one comes with the verbatim quote it was based on. A quote that can't be found word
+for word in the source is rejected, so the model can't invent evidence.
+
+Non-English quotes keep the original text and get an English translation next to it.
+
+### Claims vs facts
+
+"Officials **denied** the Brigade had any link to X" doesn't create a link. Denied and
+speculative statements ("may", "suspected") are kept as **claims**: cited evidence that
+someone said something, not facts in the graph. Reported statements ("police said") are
+kept as facts, labelled *reported*.
+
+### Admiralty codes: how much to trust a citation
+
+Every citation shows a two-character code such as **B1**.
+
+- **The letter is the source's reliability, set by you.** Grade sources on the
+  **Sources** page or with `osint grade reuters.com B --note "..."`. Ungraded sources
+  show **F** ("cannot be judged").
+
+  | Grade | Meaning |
+  |---|---|
+  | A | completely reliable |
+  | B | usually reliable |
+  | C | fairly reliable |
+  | D | not usually reliable |
+  | E | unreliable |
+  | F | cannot be judged |
+
+- **The digit is the information's credibility, computed automatically:**
+
+  | Digit | Meaning |
+  |---|---|
+  | 1 | confirmed by two or more independent sources |
+  | 4 | contradicted by another source |
+  | 6 | cannot be judged yet |
+
+"Independent" counts origins, not copies: twenty sites reposting one Telegram post count
+as one source.
+
+### Machine-read warnings
+
+Quotes taken from OCR (images, scanned PDFs) or from speech transcription are marked
+**machine-read**. A model can misread, so check the quote against the image or audio
+before relying on it.
+
+### Graph, timeline, connections
+
+- **Graph:** the network, colour-coded by type. Click a node to open the entity. Zoom in
+  to see labels. "Mentions" (weak co-occurrence) links are hidden by default.
+- **Timeline:** events in order, with their sources.
+- **Connections:** links to other investigations (a shared person, wallet, domain, or a
+  similar event) and the key players and brokers in the network. Claude, or you on the
+  Review page, confirms each link with proof.
+
+## 7. Analysis and reports with Claude
+
+All of these are buttons in the GUI (Overview, Findings, Ask Claude, Reports) and
+commands on the command line:
+
+| Action | What Claude does |
+|---|---|
+| **Plan** (`osint plan`) | Writes key questions and queues searches in several languages |
+| **Analyze** (`osint analyze`) | Records findings (facts, patterns, assessments, gaps), each with proof |
+| **Threat assessment** (`osint assess`) | Capability, intent, opportunity, likelihood and impact, indicators and warnings |
+| **Red team** (`osint red-team`) | Challenges the findings: alternative explanations, weak spots. Run it before a final report. |
+| **Ask** (`osint ask <inv> "..."`) | Answers a question from the knowledge base, with citations |
+| **Link** (`osint link <inv>`) | Confirms or rejects connections to other investigations |
+| **Report** (`osint report`) | Writes a report where every factual sentence is cited |
+
+**Findings.** Each finding is labelled with one of these:
+
+| Label | Meaning |
+|---|---|
+| observed | seen directly in the evidence |
+| reported | a source says so |
+| inferred | derived from other facts |
+| assessed | an analytic judgement, in estimative language ("likely", …) |
+
+The **Findings** tab, or `osint explain <id>`, shows a finding's proof tree all the way
+down to the quotes and screenshots. You can revise or withdraw a finding; its history is
+kept. When Claude wants to *raise* confidence or withdraw a finding, that waits for your
+approval in Review.
+
+**The report citation check.** Before a report is released, it's checked automatically:
+- every citation points to intact evidence
+- every factual sentence is cited
+- each cited quote really supports its sentence
+
+A failing report is repaired automatically where possible. Otherwise the problem
+sentences are listed (`osint report-verify <id>`), and you can release it anyway with a
+recorded reason (`osint report-override`).
+
+**Claude usage.** Claude only ever sees short quotes and structured records, never whole
+pages. Repeating a request on unchanged data reuses the cached answer. If your usage
+limit is reached, the job says so, and collection keeps working locally.
+
+**Export:** STIX 2.1 (threat intel), FollowTheMoney (Aleph) or GEXF (Gephi), from the
+Reports & export tab or with `osint export <inv> --format stix,ftm,gexf`.
+
+## 8. The review queue
+
+The **Review** page (or `osint review` / `osint decide`) collects what needs a human:
+
+| Item | Your decision |
+|---|---|
+| Possible duplicate entities | merge, or keep separate (merges can be undone) |
+| Sanctions matches | confirm the listing, or reject |
+| Contradictions | acknowledge |
+| Image metadata (GPS, camera) | acknowledge; this is a lead, and it can identify people |
+| Finding revisions proposed by Claude | accept or reject |
+| Rejected extractions (quote not found, weak citation, unknown type) | dismiss only: they can never become facts |
+
+Dismiss-only items can be cleared in bulk.
+
+**Quality checks:**
+
+| Command | What it shows |
+|---|---|
+| `osint eval health <inv>` | How often extractions are rejected. Many "quote not found" rejections mean the model is struggling; try accurate mode. |
+| `osint eval reports` | Citation coverage and precision of reports |
+| `osint eval extraction --model <tag>` | Scores a local model on the built-in multilingual test set (`evals/extraction/gold.jsonl`; add your own examples) |
+
+## 9. Evidence: proof, sharing and safety
+
+**What is kept for every capture:**
+
+- the original bytes
+- a WARC web archive record with the full server response
+- a full-page screenshot, PDF and rendered page (when screenshots are on)
+- SHA-256 and SHA-512 hashes
+- the route used (direct, VPN, Tor)
+- a hash-chained **custody log** of everything done to it
+
+**Integrity.**
+
+- The evidence is **sealed** after every run: signed and independently timestamped
+  (RFC 3161 and Bitcoin via OpenTimestamps). This proves it existed at that time and
+  hasn't changed since.
+- To check everything, run `osint evidence verify` or click **System → Verify evidence**. The
+  daemon also checks it daily.
+- Evidence can't be edited. Mistakes are corrected by retracting a relation or citation
+  (`osint retract`, `osint retract-citation`); the original stays on record.
+
+**Sharing with someone else.**
+
+- `osint evidence bundle <inv> [--report N]` (or **Reports & export → Bundle**) builds a
+  zip containing:
+  - the report
+  - only the cited evidence
+  - all the proofs
+  - a standalone `verify.py`
+- The recipient unzips it and runs `python verify.py`. They need nothing from this
+  system.
+- Add `--redact-faces` to blur faces in screenshots. Look at the result before sharing:
+  detection isn't perfect.
+
+**Contamination (CSAM, malware).** Extremist sources can carry illegal or harmful files.
+
+- **Blocklists:** put hash lists in `data/blocklists/*.txt`, one md5, sha1 or sha256 per
+  line. Matching content is refused before it is saved. Only exact copies match: a
+  re-encoded image won't.
+- **Purge:** `osint evidence purge <artifact-id> --reason "..."` (or the Evidence tab)
+  permanently deletes a file and everything derived from it, and blocklists it. The
+  custody log records that it happened, never the content.
+- **If you encounter CSAM,** report it to your national hotline (an INHOPE member, e.g.
+  NCMEC or IWF) as the law requires. Don't keep copies.
+
+## 10. Keeping investigations up to date
+
+| Task | GUI | Command line |
+|---|---|---|
+| Collect new material once | Overview → Refresh sources | `osint refresh <inv> --since week` |
+| Refresh on a schedule (optionally also analyse, or use the accurate model) | Overview → Schedule | `osint schedule <inv> --every 6h [--analyze] [--extract-role agent_heavy]` |
+| Run due schedules | System page | `osint daemon --once`, or `osint daemon` to keep running |
+| Hide a finished investigation | Archive (nothing is deleted, its schedule stops) | `osint archive <inv>`, `--undo` to restore |
+
+To refresh every hour without a terminal open:
+
 ```powershell
 schtasks /Create /SC HOURLY /TN "osint-daemon" /TR "cmd /c cd /d C:\code\osint-agents && uv run python -m osint daemon --once"
 ```
 
-**Verifying a bundle** (anyone, anywhere): unzip it, then run `python verify.py`. Optional
-tools: `pip install cryptography` (signature), `openssl` (RFC 3161), `ots` (Bitcoin anchor).
+## 11. Maintenance and limits
 
-Claude jobs run headless on your Max subscription (`ANTHROPIC_API_KEY` is removed
-from their environment). Built-in tools are disabled, so the analyst can only use the
-`osint` MCP tools. Results are cached per knowledge state, and usage is recorded in the
-`claude_job` table. When the usage limit is hit, the command says so and local
-collection keeps working.
+- **Health:** `osint doctor` (or the System page) checks:
+  - the databases and the search engine
+  - the AI models and the Claude CLI
+  - the GPU
+  - VPN, Tor and the blocklists
+- **Backup:** `osint snapshot` (or the System page) saves the database, the evidence, the
+  proofs and the config, with checksums.
+- **Memory (32 GB machine):**
+  - Work pauses when free RAM runs low (`concurrency.min_free_ram_gb`).
+  - The AI runner is restarted automatically when its memory grows too much
+    (`concurrency.recycle_llm_below_gb`).
+  - The large model unloads a minute after use.
+- **Settings:**
 
-## Tests
+  | File | What's in it |
+  |---|---|
+  | `config/settings.yaml` | network, concurrency, evidence, media, Tor |
+  | `config/models.yaml` | which local model does what; which Claude model each job uses |
+  | `config/ontology.yaml` | entity, relation and event types |
+  | `.env` | passwords |
 
-```powershell
-uv run python -m pytest                   # unit tests, plus integration tests if Postgres is running
-uv run python -m pytest -m "not integration"
-```
+- **Media options:**
+  - `media.ocr: false` turns off reading text in images.
+  - Speech transcription runs on the GPU when available. Otherwise it uses the CPU,
+    at about half real time.
+- **Your own sources and enrichers:** drop a Python file in `plugins_local/` (see
+  [plugins_local/README.md](plugins_local/README.md)). It appears in the GUI with a form
+  automatically.
 
-Optional GLiNER NER (CPU): `uv sync --extra dev --extra ner`, then set
-`extraction.extractors: [llm, gliner]` in `config/settings.yaml`.
+## 12. Command reference
 
-## Layout
+Prefix every command with `uv run python -m`. For example,
+`uv run python -m osint status`.
 
-```
-config/            settings.yaml, models.yaml, ontology.yaml, searxng/
-migrations/        alembic (schema + integrity triggers)
-plugins_local/     drop-in plugins (auto-discovered)
-src/osint/
-  core/            config, models, ontology, plugins, context
-  storage/         ORM schema, sessions, raw content-addressed store
-  evidence/        custody chain, ingest
-  plugins/         built-in plugins
-  cli.py
-tests/
-```
+**Investigations and collection**
+
+| Command | What it does |
+|---|---|
+| `osint new <name> --focus ... [-q/-u/-f ...] [--plan] [--run] [--anonymous]` | Create an investigation |
+| `osint run <inv> [--extract-role agent_heavy] [--no-screenshots]` | Collect, read and extract |
+| `osint resume <inv> [--retry-failed]` | Continue after a pause or crash |
+| `osint status [<inv>]` | List investigations, or show one's progress |
+| `osint collect <inv> <source> '<json>'` | Queue a source (see [section 4](#4-collecting-where-data-comes-from)) |
+| `osint enrich <inv> [--enrichers rdap,geocode,btc,sanctions]` | Add facts from reference services |
+| `osint reextract <inv> --role agent_heavy` | Re-read documents with the accurate model |
+| `osint refresh <inv> [--since week]` / `osint schedule <inv> --every 6h` / `osint daemon [--once]` | Keep up to date |
+| `osint archive <inv> [--undo]` | Hide, or restore |
+| `osint network <inv> standard\|anonymous` / `osint tor start\|stop\|status` | Network profile and Tor |
+
+**Exploring**
+
+| Command | What it does |
+|---|---|
+| `osint entity <name>` | Everything known about an entity, across investigations |
+| `osint findings <inv>` / `osint explain <finding>` | Findings, and a finding's proof tree |
+| `osint links <inv>` / `osint key-players [<inv>]` | Cross-investigation links, and key players |
+| `osint sources [<inv>]` / `osint grade <source> A-F --note ...` | Sources and their reliability |
+
+**Claude**
+
+| Command | What it does |
+|---|---|
+| `osint plan` / `analyze` / `assess` / `red-team` / `report <inv>` | See [section 7](#7-analysis-and-reports-with-claude). `analyze` and `assess` take `--fresh` to ignore the cache. |
+| `osint ask <inv> "<question>"` | Question and answer, with citations |
+| `osint link <inv>` | Claude confirms or rejects link candidates |
+| `osint revise <finding> --confidence 0.3 --reason ...` / `--withdraw` | Revise a finding |
+| `osint apply-red-team <job>` | Apply a red-team job's suggested confidences |
+| `osint report-verify <id>` / `osint report-override <id> --reason ...` | Report citation check, and override |
+
+**Review and corrections**
+
+| Command | What it does |
+|---|---|
+| `osint review [<inv>] [--recheck]` | Show rejected extractions and candidates |
+| `osint decide <review-id> accept\|reject [--note]` | Decide a review item |
+| `osint decide-link <link-id> confirm\|reject` | Decide a cross-investigation link |
+| `osint er [<inv>]` / `osint merges` / `osint er-undo <id>` | Entity matching, and undoing merges |
+| `osint corroborate [<inv>]` | Recount independent sources and contradictions |
+| `osint retract <relation> --reason` / `osint unretract` / `osint retract-citation <E> --reason` | Retract wrong facts or citations |
+| `osint cleanup` | Retract relations of types only enrichers may create |
+
+**Evidence and export**
+
+| Command | What it does |
+|---|---|
+| `osint evidence add <file>` | Add your own file as evidence |
+| `osint evidence verify` / `osint evidence seal` | Check, or seal, all evidence |
+| `osint evidence bundle <inv> [--report N] [--redact-faces]` | Shareable, verifiable zip |
+| `osint evidence purge <artifact> --reason ...` / `osint evidence blocklist` | Contamination handling |
+| `osint export <inv> --format stix,ftm,gexf` | Export the data |
+
+**System**
+
+| Command | What it does |
+|---|---|
+| `osint ui [--port 8765] [--no-open]` | Web GUI |
+| `osint init` / `osint doctor` | Set up the database / check health |
+| `osint snapshot` | Backup |
+| `osint graph-sync` | Rebuild the graph database from the main database |
+| `osint plugins` / `osint ontology` | List sources and enrichers, and entity types |
+| `osint eval extraction\|history\|health\|reports` | Quality metrics |
+
+Every command has `--help`.
+
+## 13. Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| `osint.exe` blocked, or "Access denied" | Use `uv run python -m osint ...` |
+| `pytest` or media features disappeared | `uv sync --extra dev --extra media` (a plain `uv sync` removes them) |
+| A check fails in `osint doctor` | Start Docker (`docker compose up -d`) and Ollama, and pull the missing model |
+| Anonymous run refuses to start | `osint tor start`, then `docker compose up -d searxng-tor` |
+| Many pages "blocked" | Check WARP is connected (`warp-cli status`). Some sites block every automated client; this is recorded, not bypassed. |
+| Claude job says the usage limit was hit | Wait for the limit to reset. Local collection keeps working. |
+| Run is slow or paused | Low RAM: close other programs. See the Jobs log. |
+| GUI job shows "lost" | The GUI was restarted while it ran. Check `osint status <inv>`, and `osint resume` if needed. |
+| Review queue is huge | On the Review page, bulk-dismiss "quote not found" and "ontology" items. They can never become facts anyway. |
