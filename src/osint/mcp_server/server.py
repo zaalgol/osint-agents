@@ -76,7 +76,8 @@ def build_server(tools: AnalystTools, toolset: str = "full") -> MCPServer:
     @server.tool()
     def timeline(investigation: int | str | None = None, start: str | None = None,
                  end: str | None = None, limit: int = 100) -> list[dict]:
-        """Events in chronological order with participants, location and evidence."""
+        """Events in chronological order with participants, location and evidence.
+        `start`/`end` are ISO dates (YYYY-MM-DD); `end` is inclusive."""
         return tools.timeline(investigation, start, end, limit)
 
     @server.tool()
@@ -118,10 +119,12 @@ def build_server(tools: AnalystTools, toolset: str = "full") -> MCPServer:
         return tools.graph_query(cypher, params)
 
     @server.tool()
-    def contradictions(investigation: int | str | None = None) -> list[dict]:
-        """Same incident reported with conflicting facts (e.g. dates). Address these in
-        findings and reports; don't silently pick one side."""
-        return tools.contradictions(investigation)
+    def contradictions(investigation: int | str | None = None, offset: int = 0,
+                       limit: int = 40) -> dict:
+        """Same incident reported with conflicting facts (e.g. dates), one page at a time
+        (`total`, `next_offset`). Address these in findings and reports; don't silently
+        pick one side."""
+        return tools.contradictions(investigation, offset, max(1, min(limit, 100)))
 
     if toolset != "full":
         return server

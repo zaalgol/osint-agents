@@ -152,6 +152,11 @@ def test_read_tools(kb):
     assert {n["name"] for n in nb["nodes"]} >= {"Abu Example", "Northern Front"}
     tl = t.timeline()
     assert tl[0]["time"].startswith("2026-03-01")
+    # date filters are ISO dates, `end` inclusive (they used to fail as text comparisons)
+    assert [e["event_id"] for e in t.timeline(start="2026-03-01", end="2026-03-01")] ==         [tl[0]["event_id"]]
+    assert t.timeline(start="2026-03-02") == []
+    with pytest.raises(ToolError):
+        t.timeline(start="March 2026")
     ev = t.get_evidence([kb["rel_ev"], 999_999])
     assert ev[0]["quote"] == "Abu Example, a commander of the Northern Front"
     assert ev[0]["sha256"] == kb["art_sha"] and "context" in ev[0]

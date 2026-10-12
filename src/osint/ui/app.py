@@ -445,7 +445,7 @@ def create_app(app: App | None = None, jobs: JobManager | None = None) -> Starle
         inv = int(req.path_params["inv"])
         t = tools(inv)
         return JSONResponse({"findings": t.list_findings(inv), "links": t.cross_links(inv),
-                             "contradictions": t.contradictions(inv)})
+                             "contradictions": t.contradictions(inv, limit=None)["contradictions"]})
 
     async def explain(req: Request) -> Response:
         return JSONResponse(_explain(S, int(req.path_params["fid"])))

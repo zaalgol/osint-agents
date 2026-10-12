@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mcp.server.mcpserver.exceptions import ToolError as MCPToolError
@@ -57,6 +58,15 @@ class ToolError(MCPToolError, ValueError):
     Subclasses the MCP SDK's ToolError: the SDK hides the text of any other exception
     from the model, and these messages are the analyst's instructions for retrying.
     """
+
+
+def _when(value: str, name: str) -> datetime:
+    """ISO date or datetime from a tool argument (naive values are UTC)."""
+    try:
+        t = datetime.fromisoformat(value.strip())
+    except (AttributeError, ValueError):
+        raise ToolError(f"{name} must be an ISO date like 2023-10-07, got {value!r}") from None
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 @dataclass
@@ -368,9 +378,9 @@ class AnalystTools:
                                     # one row per incident: hide non-canonical cluster members
                                     (Event.cluster_id.is_(None)) | (Event.cluster_id == Event.id))
             if start:
-                q = q.where(Event.time >= start)
+                q = q.where(Event.time >= _when(start, "start"))
             if end:
-                q = q.where(Event.time <= end)
+                q = q.where(Event.time < _when(end, "end") + timedelta(days=1))
             out = []
             for ev in s.scalars(q.order_by(Event.time.asc().nulls_last()).limit(min(limit, 300))):
                 parts = s.execute(select(Entity.id, Entity.canonical_name, EventParticipant.role)
@@ -492,20 +502,27 @@ class AnalystTools:
         except Exception as e:
             raise ToolError(f"cypher error: {str(e)[:500]}") from e
 
-    def contradictions(self, investigation: int | str | None = None) -> list[dict]:
-        """Events reported with conflicting facts (e.g. different dates for one incident)."""
+    def contradictions(self, investigation: int | str | None = None, offset: int = 0,
+                       limit: int | None = 40) -> dict:
+        """Events reported with conflicting facts (e.g. different dates for one incident),
+        a page at a time: a big investigation has hundreds, too many for one answer.
+        limit=None returns them all (the GUI)."""
         with self.session_factory() as s:
             inv = self._inv(s, investigation)
             ev_ids = set(s.scalars(self._refs(inv.id, "event")))
+            rows = [r for r in s.scalars(select(ReviewItem).where(
+                        ReviewItem.kind == "contradiction").order_by(ReviewItem.id))
+                    if {r.payload["a"], r.payload["b"]} & ev_ids]
             out = []
-            for r in s.scalars(select(ReviewItem).where(ReviewItem.kind == "contradiction")):
-                if {r.payload["a"], r.payload["b"]} & ev_ids:
-                    out.append({"events": [r.payload["a"], r.payload["b"]], "issue": r.reason,
-                                "a": r.payload.get("a_description"),
-                                "b": r.payload.get("b_description"), "status": r.status,
-                                "evidence_a": self._evidence_ids(s, "event", r.payload["a"]),
-                                "evidence_b": self._evidence_ids(s, "event", r.payload["b"])})
-            return out
+            end = len(rows) if limit is None else offset + max(1, limit)
+            for r in rows[offset:end]:
+                out.append({"events": [r.payload["a"], r.payload["b"]], "issue": r.reason,
+                            "a": r.payload.get("a_description"),
+                            "b": r.payload.get("b_description"), "status": r.status,
+                            "evidence_a": self._evidence_ids(s, "event", r.payload["a"]),
+                            "evidence_b": self._evidence_ids(s, "event", r.payload["b"])})
+            return {"total": len(rows), "offset": offset, "contradictions": out,
+                    "next_offset": end if end < len(rows) else None}
 
     # ================================================================ write tools
 
