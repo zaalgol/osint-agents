@@ -602,6 +602,14 @@ class AnalystTools:
         if getattr(cls, "requires_account", False):
             raise ToolError(f"collector {plugin!r} needs the user's account and is disabled; "
                             "use public sources")
+        # pydantic ignores unknown keys by default, so a misnamed option ("from" for
+        # "from_date") would silently do nothing: reject it so Claude corrects the call
+        fields = cls.params_schema.model_fields
+        unknown = sorted(k for k in params if k not in fields and not k.startswith("_"))
+        if unknown:
+            raise ToolError(f"unknown params for {plugin}: {unknown}; allowed: "
+                            + ", ".join(f"{k} ({f.description or f.annotation})"
+                                        for k, f in fields.items()))
         try:
             cls.params_schema.model_validate(params)
         except ValidationError as e:

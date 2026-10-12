@@ -148,7 +148,11 @@ def build_server(tools: AnalystTools, toolset: str = "full") -> MCPServer:
                            priority: int = 100) -> dict:
         """Queue collection by the local agents (runs on the next `osint run`).
         plugins: searxng {"queries": [...], "language": "ar", "time_range": "month",
-        "max_results": 10}; web {"urls": [...]}; rss {"feeds": [...]}."""
+        "max_results": 10}; web {"urls": [...]}; rss {"feeds": [...]};
+        wayback {"urls": [...], "from_date": "YYYYMMDD", "to_date": "YYYYMMDD",
+        "mode": "earliest|latest|spread"}; telegram_public {"channels": [...],
+        "since": "YYYY-MM-DD", "max_posts": 200}. Unknown params are rejected with the
+        plugin's allowed fields."""
         return tools.request_collection(plugin, params, reason, priority)
 
     @server.tool()

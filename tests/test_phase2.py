@@ -198,6 +198,8 @@ def test_request_collection_validates_and_budgets(kb):
         t.request_collection("telegram_magic", {}, "x")
     with pytest.raises(ToolError, match="invalid params"):
         t.request_collection("searxng", {"queries": []}, "x")
+    with pytest.raises(ToolError, match=r"unknown params.*\['from'\].*from_date"):
+        t.request_collection("wayback", {"urls": ["a.example"], "from": "20231007"}, "x")
     r = t.request_collection("searxng", {"queries": ["northern front"], "language": "ar"},
                              "Arabic coverage")
     assert r["queued"]
